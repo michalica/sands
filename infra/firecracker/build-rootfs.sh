@@ -53,9 +53,11 @@ sudo cp /etc/resolv.conf squashfs-root/etc/resolv.conf
 sudo mount --bind /proc squashfs-root/proc
 sudo mount --bind /sys squashfs-root/sys
 sudo mount --bind /dev squashfs-root/dev
+sudo mount -t tmpfs tmpfs squashfs-root/tmp
 
 # Update cleanup to unmount
 cleanup() {
+  sudo umount squashfs-root/tmp 2>/dev/null || true
   sudo umount squashfs-root/proc 2>/dev/null || true
   sudo umount squashfs-root/sys 2>/dev/null || true
   sudo umount squashfs-root/dev 2>/dev/null || true
@@ -67,17 +69,18 @@ trap cleanup EXIT
 # 4. Install Node.js and socat into the rootfs
 echo "[..] Installing Node.js and socat..."
 sudo chroot squashfs-root /bin/bash -c "
-  apt-get update -qq
-  apt-get install -y -qq nodejs npm socat > /dev/null 2>&1 || {
-    # If nodejs package is too old, use nodesource
+  apt-get update
+  apt-get install -y nodejs socat curl ca-certificates
+  node --version || {
+    # If nodejs package is too old or missing, use nodesource
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-    apt-get install -y -qq nodejs socat > /dev/null 2>&1
+    apt-get install -y nodejs
   }
   node --version
 "
 
 # Unmount before creating image
-sudo umount squashfs-root/proc squashfs-root/sys squashfs-root/dev 2>/dev/null || true
+sudo umount squashfs-root/tmp squashfs-root/proc squashfs-root/sys squashfs-root/dev 2>/dev/null || true
 
 # 5. Copy guest agent
 echo "[..] Installing guest agent..."
