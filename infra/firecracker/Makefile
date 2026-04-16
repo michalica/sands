@@ -23,7 +23,7 @@ test-vm:
 	@curl -s --unix-socket /tmp/sandboxjs/firecracker/test.sock \
 		-X PUT http://localhost/boot-source \
 		-H 'Content-Type: application/json' \
-		-d '{"kernel_image_path":"/opt/sandboxjs/vmlinux","boot_args":"console=ttyS0 reboot=k panic=1 pci=off init=/init"}'
+		-d '{"kernel_image_path":"/opt/sandboxjs/vmlinux","boot_args":"console=ttyS0 reboot=k panic=1 pci=off"}'
 	@# Copy rootfs for this test VM
 	@cp /opt/sandboxjs/rootfs.ext4 /tmp/sandboxjs/firecracker/test-rootfs.ext4
 	@curl -s --unix-socket /tmp/sandboxjs/firecracker/test.sock \

@@ -1,102 +1,97 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build a minimal Alpine aarch64 rootfs with Node.js for Firecracker
-# Must run on aarch64 Linux (e.g., Raspberry Pi)
-# Output: /opt/sandboxjs/rootfs.ext4
+# Download Firecracker CI Ubuntu rootfs and patch in the guest agent + Node.js
+# Source: https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md
 
-ALPINE_VERSION="3.20"
-ALPINE_ARCH="aarch64"
-ROOTFS_SIZE_MB=512
 OUTPUT="/opt/sandboxjs/rootfs.ext4"
 AGENT_DIR="$(cd "$(dirname "$0")/guest-agent" && pwd)"
 
-if [ "$(uname -m)" != "aarch64" ]; then
-  echo "ERROR: Must run on aarch64"
-  exit 1
+if [ -f "$OUTPUT" ]; then
+  echo "[OK] Rootfs already exists at $OUTPUT"
+  exit 0
 fi
 
-echo "=== Building rootfs ==="
+ARCH="$(uname -m)"
+release_url="https://github.com/firecracker-microvm/firecracker/releases"
+latest_version=$(basename $(curl -fsSLI -o /dev/null -w %{url_effective} ${release_url}/latest))
+CI_VERSION=${latest_version%.*}
 
-# Create empty ext4 image
+echo "=== Building rootfs (Firecracker ${latest_version}, CI ${CI_VERSION}) ==="
+
 TMPDIR=$(mktemp -d)
-ROOTFS_IMG="$TMPDIR/rootfs.ext4"
-MOUNT_DIR="$TMPDIR/mnt"
-
-echo "[..] Creating ${ROOTFS_SIZE_MB}MB ext4 image..."
-dd if=/dev/zero of="$ROOTFS_IMG" bs=1M count=$ROOTFS_SIZE_MB status=none
-mkfs.ext4 -q -F "$ROOTFS_IMG"
-
-# Mount it
-mkdir -p "$MOUNT_DIR"
-sudo mount -o loop "$ROOTFS_IMG" "$MOUNT_DIR"
+cd "$TMPDIR"
 
 cleanup() {
-  sudo umount "$MOUNT_DIR" 2>/dev/null || true
-  rm -rf "$TMPDIR"
+  cd /
+  sudo rm -rf "$TMPDIR"
 }
 trap cleanup EXIT
 
-# Download and extract Alpine minirootfs
-ALPINE_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/${ALPINE_ARCH}/alpine-minirootfs-${ALPINE_VERSION}.0-${ALPINE_ARCH}.tar.gz"
-echo "[..] Downloading Alpine ${ALPINE_VERSION} minirootfs..."
-curl -fsSL "$ALPINE_URL" | sudo tar xz -C "$MOUNT_DIR"
+# 1. Download Ubuntu squashfs from Firecracker CI
+echo "[..] Finding latest Ubuntu rootfs for ${ARCH}..."
+latest_ubuntu_key=$(curl -s "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/ubuntu-&list-type=2" \
+    | grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/ubuntu-[0-9]+\.[0-9]+\.squashfs)(?=</Key>)" \
+    | sort -V | tail -1)
 
-# Configure DNS inside chroot
-sudo cp /etc/resolv.conf "$MOUNT_DIR/etc/resolv.conf"
+if [ -z "$latest_ubuntu_key" ]; then
+  echo "ERROR: Could not find Ubuntu rootfs in S3 bucket"
+  exit 1
+fi
 
-# Install Node.js and socat inside the rootfs
+ubuntu_version=$(basename "$latest_ubuntu_key" .squashfs | grep -oE '[0-9]+\.[0-9]+')
+echo "[..] Downloading Ubuntu ${ubuntu_version} rootfs..."
+curl -fsSL -o "ubuntu.squashfs" "https://s3.amazonaws.com/spec.ccfc.min/${latest_ubuntu_key}"
+
+# 2. Extract squashfs
+echo "[..] Extracting squashfs..."
+sudo unsquashfs ubuntu.squashfs
+
+# 3. Install Node.js and socat into the rootfs
 echo "[..] Installing Node.js and socat..."
-sudo chroot "$MOUNT_DIR" /bin/sh -c "
-  apk update
-  apk add --no-cache nodejs socat
+sudo chroot squashfs-root /bin/bash -c "
+  apt-get update -qq
+  apt-get install -y -qq nodejs npm socat > /dev/null 2>&1 || {
+    # If nodejs package is too old, use nodesource
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y -qq nodejs socat > /dev/null 2>&1
+  }
   node --version
 "
 
-# Copy guest agent
-echo "[..] Copying guest agent..."
-sudo mkdir -p "$MOUNT_DIR/opt/agent"
-sudo cp "$AGENT_DIR/agent.js" "$MOUNT_DIR/opt/agent/agent.js"
+# 4. Copy guest agent
+echo "[..] Installing guest agent..."
+sudo mkdir -p squashfs-root/opt/agent
+sudo cp "$AGENT_DIR/agent.js" squashfs-root/opt/agent/agent.js
 
-# Create init script that starts the guest agent via socat on vsock
-echo "[..] Configuring init..."
-sudo tee "$MOUNT_DIR/etc/init.d/agent" > /dev/null << 'INITEOF'
-#!/sbin/openrc-run
+# 5. Create init wrapper that starts the agent on boot
+sudo tee squashfs-root/etc/systemd/system/sandboxjs-agent.service > /dev/null << 'EOF'
+[Unit]
+Description=SandboxJS Guest Agent
+After=network.target
 
-name="sandboxjs-agent"
-description="SandboxJS Guest Agent"
+[Service]
+Type=simple
+ExecStart=/usr/bin/socat VSOCK-LISTEN:9999,reuseaddr,fork EXEC:/usr/bin/node /opt/agent/agent.js
+Restart=always
 
-command="/usr/bin/socat"
-command_args="VSOCK-LISTEN:9999,reuseaddr,fork EXEC:/usr/bin/node /opt/agent/agent.js"
-command_background=true
-pidfile="/run/agent.pid"
+[Install]
+WantedBy=multi-user.target
+EOF
 
-depend() {
-  need localmount
-}
-INITEOF
-sudo chmod +x "$MOUNT_DIR/etc/init.d/agent"
+sudo chroot squashfs-root /bin/bash -c "systemctl enable sandboxjs-agent" 2>/dev/null || true
 
-# Create a simple /init for Firecracker (bypasses OpenRC for faster boot)
-sudo tee "$MOUNT_DIR/init" > /dev/null << 'INITEOF'
-#!/bin/sh
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev
+# 6. Create ext4 image
+echo "[..] Creating ext4 image..."
+sudo chown -R root:root squashfs-root
+truncate -s 1G rootfs.ext4
+sudo mkfs.ext4 -d squashfs-root -F rootfs.ext4
 
-# Start guest agent on vsock port 9999
-/usr/bin/socat VSOCK-LISTEN:9999,reuseaddr,fork EXEC:"/usr/bin/node /opt/agent/agent.js" &
-
-# Keep init alive
-while true; do sleep 3600; done
-INITEOF
-sudo chmod +x "$MOUNT_DIR/init"
-
-# Unmount and move to final location
-sudo umount "$MOUNT_DIR"
-sudo mv "$ROOTFS_IMG" "$OUTPUT"
+# 7. Verify and move to final location
+e2fsck -fn rootfs.ext4 > /dev/null 2>&1
+sudo mv rootfs.ext4 "$OUTPUT"
 sudo chown "$USER:$USER" "$OUTPUT"
 
 echo ""
-echo "[OK] Rootfs built at $OUTPUT"
+echo "[OK] Rootfs: $OUTPUT (Ubuntu ${ubuntu_version})"
 ls -lh "$OUTPUT"

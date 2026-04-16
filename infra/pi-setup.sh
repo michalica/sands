@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-FIRECRACKER_VERSION="v1.10.1"
 NODE_MAJOR=20
 
 echo "=== SandboxJS Pi Setup ==="
@@ -41,28 +40,32 @@ else
   echo "[OK] Node.js $(node -v) installed"
 fi
 
-# 4. Install socat if not present
-if command -v socat &>/dev/null; then
-  echo "[OK] socat already installed"
-else
-  echo "[..] Installing socat..."
-  sudo apt-get install -y socat
-  echo "[OK] socat installed"
-fi
+# 4. Install socat + squashfs-tools if not present
+for pkg in socat squashfs-tools; do
+  if dpkg -s "$pkg" &>/dev/null; then
+    echo "[OK] $pkg already installed"
+  else
+    echo "[..] Installing $pkg..."
+    sudo apt-get install -y "$pkg"
+    echo "[OK] $pkg installed"
+  fi
+done
 
-# 5. Install Firecracker
+# 5. Install Firecracker (auto-detect latest release)
 FIRECRACKER_BIN="/usr/local/bin/firecracker"
 if [ -x "$FIRECRACKER_BIN" ]; then
   echo "[OK] Firecracker already installed at $FIRECRACKER_BIN"
 else
-  echo "[..] Downloading Firecracker ${FIRECRACKER_VERSION} (aarch64)..."
+  release_url="https://github.com/firecracker-microvm/firecracker/releases"
+  latest=$(basename $(curl -fsSLI -o /dev/null -w %{url_effective} ${release_url}/latest))
+  echo "[..] Downloading Firecracker ${latest} (${ARCH})..."
   TMPDIR=$(mktemp -d)
-  curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-aarch64.tgz" \
+  curl -fsSL "${release_url}/download/${latest}/firecracker-${latest}-${ARCH}.tgz" \
     | tar xz -C "$TMPDIR"
-  sudo mv "$TMPDIR/release-${FIRECRACKER_VERSION}-aarch64/firecracker-${FIRECRACKER_VERSION}-aarch64" "$FIRECRACKER_BIN"
+  sudo mv "$TMPDIR/release-${latest}-${ARCH}/firecracker-${latest}-${ARCH}" "$FIRECRACKER_BIN"
   sudo chmod +x "$FIRECRACKER_BIN"
   rm -rf "$TMPDIR"
-  echo "[OK] Firecracker installed at $FIRECRACKER_BIN"
+  echo "[OK] Firecracker ${latest} installed at $FIRECRACKER_BIN"
 fi
 
 # 6. Create directory structure

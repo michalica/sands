@@ -6,7 +6,7 @@ import type { SandboxBackend, ExecutionResult } from "./types.js";
 import { FirecrackerApi } from "./firecracker-api.js";
 
 const REQUIRES_LINUX = "FirecrackerBackend requires Linux with KVM enabled";
-const BOOT_ARGS = "console=ttyS0 reboot=k panic=1 pci=off init=/init";
+const BOOT_ARGS = "console=ttyS0 reboot=k panic=1 pci=off";
 const VSOCK_PORT = 9999;
 
 export interface FirecrackerConfig {
