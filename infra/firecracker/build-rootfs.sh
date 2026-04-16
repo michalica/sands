@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Download Firecracker CI Ubuntu rootfs and patch in the guest agent + Node.js
-# Source: https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md
+# Download Firecracker CI Ubuntu rootfs and patch in Node.js + guest agent
+# Avoids chroot apt — just copies binaries directly from the host Pi
 
 OUTPUT="/opt/sandboxjs/rootfs.ext4"
 AGENT_DIR="$(cd "$(dirname "$0")/guest-agent" && pwd)"
@@ -11,6 +11,14 @@ if [ -f "$OUTPUT" ]; then
   echo "[OK] Rootfs already exists at $OUTPUT"
   exit 0
 fi
+
+# Verify host has what we need
+for cmd in node socat unsquashfs; do
+  if ! command -v "$cmd" &>/dev/null; then
+    echo "ERROR: $cmd not found on host. Run pi-setup.sh first."
+    exit 1
+  fi
+done
 
 ARCH="$(uname -m)"
 release_url="https://github.com/firecracker-microvm/firecracker/releases"
@@ -47,47 +55,37 @@ curl -fsSL -o "ubuntu.squashfs" "https://s3.amazonaws.com/spec.ccfc.min/${latest
 echo "[..] Extracting squashfs..."
 sudo unsquashfs ubuntu.squashfs
 
-# 3. Set up DNS + mount points for chroot
-echo "[..] Preparing chroot..."
-sudo cp /etc/resolv.conf squashfs-root/etc/resolv.conf
-sudo mount --bind /proc squashfs-root/proc
-sudo mount --bind /sys squashfs-root/sys
-sudo mount --bind /dev squashfs-root/dev
-sudo mount -t tmpfs tmpfs squashfs-root/tmp
+# 3. Copy node and socat binaries + their libs from the host
+echo "[..] Copying node binary from host..."
+NODE_BIN=$(which node)
+SOCAT_BIN=$(which socat)
 
-# Update cleanup to unmount
-cleanup() {
-  sudo umount squashfs-root/tmp 2>/dev/null || true
-  sudo umount squashfs-root/proc 2>/dev/null || true
-  sudo umount squashfs-root/sys 2>/dev/null || true
-  sudo umount squashfs-root/dev 2>/dev/null || true
-  cd /
-  sudo rm -rf "$TMPDIR"
-}
-trap cleanup EXIT
+sudo cp "$NODE_BIN" squashfs-root/usr/local/bin/node
+sudo cp "$SOCAT_BIN" squashfs-root/usr/local/bin/socat
 
-# 4. Install Node.js and socat into the rootfs
-echo "[..] Installing Node.js and socat..."
-sudo chroot squashfs-root /bin/bash -c "
-  apt-get update
-  apt-get install -y nodejs socat curl ca-certificates
-  node --version || {
-    # If nodejs package is too old or missing, use nodesource
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-    apt-get install -y nodejs
-  }
-  node --version
-"
+# Copy shared libraries that node and socat need
+echo "[..] Copying shared libraries..."
+for bin in "$NODE_BIN" "$SOCAT_BIN"; do
+  ldd "$bin" 2>/dev/null | grep -oP '/\S+' | while read lib; do
+    if [ -f "$lib" ]; then
+      # Preserve directory structure
+      sudo mkdir -p "squashfs-root$(dirname "$lib")"
+      sudo cp -n "$lib" "squashfs-root${lib}" 2>/dev/null || true
+    fi
+  done
+done
 
-# Unmount before creating image
-sudo umount squashfs-root/tmp squashfs-root/proc squashfs-root/sys squashfs-root/dev 2>/dev/null || true
+# Verify node works in the rootfs
+echo "[..] Verifying node..."
+sudo chroot squashfs-root /usr/local/bin/node --version
 
-# 5. Copy guest agent
+# 4. Copy guest agent
 echo "[..] Installing guest agent..."
 sudo mkdir -p squashfs-root/opt/agent
 sudo cp "$AGENT_DIR/agent.js" squashfs-root/opt/agent/agent.js
 
-# 6. Create init wrapper that starts the agent on boot
+# 5. Create systemd service for the guest agent
+sudo mkdir -p squashfs-root/etc/systemd/system
 sudo tee squashfs-root/etc/systemd/system/sandboxjs-agent.service > /dev/null << 'EOF'
 [Unit]
 Description=SandboxJS Guest Agent
@@ -95,26 +93,29 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/socat VSOCK-LISTEN:9999,reuseaddr,fork EXEC:/usr/bin/node /opt/agent/agent.js
+ExecStart=/usr/local/bin/socat VSOCK-LISTEN:9999,reuseaddr,fork EXEC:/usr/local/bin/node /opt/agent/agent.js
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-sudo chroot squashfs-root /bin/bash -c "systemctl enable sandboxjs-agent" 2>/dev/null || true
+# Enable the service by creating the symlink directly
+sudo mkdir -p squashfs-root/etc/systemd/system/multi-user.target.wants
+sudo ln -sf /etc/systemd/system/sandboxjs-agent.service \
+  squashfs-root/etc/systemd/system/multi-user.target.wants/sandboxjs-agent.service
 
-# 7. Create ext4 image
+# 6. Create ext4 image
 echo "[..] Creating ext4 image..."
 sudo chown -R root:root squashfs-root
 truncate -s 1G rootfs.ext4
 sudo mkfs.ext4 -d squashfs-root -F rootfs.ext4
 
-# 8. Verify and move to final location
+# 7. Verify and move to final location
 e2fsck -fn rootfs.ext4 > /dev/null 2>&1
 sudo mv rootfs.ext4 "$OUTPUT"
 sudo chown "$USER:$USER" "$OUTPUT"
 
 echo ""
-echo "[OK] Rootfs: $OUTPUT (Ubuntu ${ubuntu_version})"
+echo "[OK] Rootfs: $OUTPUT (Ubuntu ${ubuntu_version} + Node.js $(node --version))"
 ls -lh "$OUTPUT"
