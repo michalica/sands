@@ -6,7 +6,17 @@ import { sandboxRoutes } from "./routes/sandboxes.js";
 
 const app = Fastify({ logger: true });
 
-const backend = createBackend(config.backendType, config.maxMemoryMb);
+const backend = createBackend({
+  type: config.backendType,
+  maxMemoryMb: config.maxMemoryMb,
+  firecracker: {
+    vcpuCount: config.vcpuCount,
+    kernelImagePath: config.kernelImagePath,
+    rootfsPath: config.rootfsPath,
+    socketDir: config.firecrackerSocketDir,
+    firecrackerBin: config.firecrackerBin,
+  },
+});
 const manager = new SandboxManager(backend, config.defaultTimeoutMs, config.sandboxTtlMs);
 
 // Health check

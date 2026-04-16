@@ -1,27 +1,56 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import { copyFile, mkdir, unlink, access } from "node:fs/promises";
+import { join } from "node:path";
+import { createConnection, type Socket } from "node:net";
 import type { SandboxBackend, ExecutionResult } from "./types.js";
+import { FirecrackerApi } from "./firecracker-api.js";
 
 const REQUIRES_LINUX = "FirecrackerBackend requires Linux with KVM enabled";
+const BOOT_ARGS = "console=ttyS0 reboot=k panic=1 pci=off init=/init";
+const VSOCK_PORT = 9999;
+
+export interface FirecrackerConfig {
+  maxMemoryMb: number;
+  vcpuCount?: number;
+  kernelImagePath?: string;
+  rootfsPath?: string;
+  socketDir?: string;
+  firecrackerBin?: string;
+}
+
+interface VmState {
+  proc: ChildProcess;
+  socketPath: string;
+  vsockUdsPath: string;
+  rootfsCopyPath: string;
+  cid: number;
+  api: FirecrackerApi;
+}
 
 /**
  * Firecracker microVM-based sandbox backend.
- *
- * This backend manages Firecracker microVMs for strong isolation.
- * It requires a Linux host with KVM access (/dev/kvm).
- *
- * On non-Linux platforms, all operations throw — use ProcessBackend for local dev.
- *
- * Firecracker API reference: https://github.com/firecracker-microvm/firecracker/blob/main/src/api_server/swagger/firecracker.yaml
+ * Requires a Linux host with KVM access (/dev/kvm).
+ * On non-Linux platforms, all operations throw.
  */
 export class FirecrackerBackend implements SandboxBackend {
-  private sandboxes = new Set<string>();
+  private vms = new Map<string, VmState>();
+  private nextCid = 3; // CIDs 0-2 are reserved
 
-  constructor(
-    private maxMemoryMb: number = 256,
-    private vcpuCount: number = 1,
-    private kernelImagePath: string = "/opt/sandboxjs/vmlinux",
-    private rootfsPath: string = "/opt/sandboxjs/rootfs.ext4",
-    private socketDir: string = "/tmp/sandboxjs/firecracker",
-  ) {}
+  private maxMemoryMb: number;
+  private vcpuCount: number;
+  private kernelImagePath: string;
+  private rootfsPath: string;
+  private socketDir: string;
+  private firecrackerBin: string;
+
+  constructor(config: FirecrackerConfig) {
+    this.maxMemoryMb = config.maxMemoryMb;
+    this.vcpuCount = config.vcpuCount ?? 1;
+    this.kernelImagePath = config.kernelImagePath ?? "/opt/sandboxjs/vmlinux";
+    this.rootfsPath = config.rootfsPath ?? "/opt/sandboxjs/rootfs.ext4";
+    this.socketDir = config.socketDir ?? "/tmp/sandboxjs/firecracker";
+    this.firecrackerBin = config.firecrackerBin ?? "/usr/local/bin/firecracker";
+  }
 
   private assertLinux(): void {
     if (process.platform !== "linux") {
@@ -30,76 +59,200 @@ export class FirecrackerBackend implements SandboxBackend {
   }
 
   exists(sandboxId: string): boolean {
-    return this.sandboxes.has(sandboxId);
+    return this.vms.has(sandboxId);
   }
 
-  /**
-   * Create a Firecracker microVM.
-   *
-   * Steps (to be implemented with actual Firecracker API calls):
-   * 1. Create a Unix socket for the Firecracker API
-   * 2. Start the Firecracker process with --api-sock
-   * 3. PUT /machine-config (vcpu_count, mem_size_mib)
-   * 4. PUT /boot-source (kernel_image_path, boot_args)
-   * 5. PUT /drives/rootfs (path, is_root_device)
-   * 6. PUT /actions (InstanceStart)
-   */
   async create(sandboxId: string): Promise<void> {
     this.assertLinux();
 
-    // TODO: Implement Firecracker VM creation
-    // const socketPath = join(this.socketDir, `${sandboxId}.sock`);
-    // 1. Spawn firecracker --api-sock ${socketPath}
-    // 2. Configure VM via HTTP over Unix socket:
-    //    - PUT /machine-config { vcpu_count: this.vcpuCount, mem_size_mib: this.maxMemoryMb }
-    //    - PUT /boot-source { kernel_image_path: this.kernelImagePath, boot_args: "console=ttyS0 reboot=k panic=1 pci=off" }
-    //    - PUT /drives/rootfs { drive_id: "rootfs", path_on_host: this.rootfsPath, is_root_device: true, is_read_only: false }
-    //    - PUT /actions { action_type: "InstanceStart" }
+    await mkdir(this.socketDir, { recursive: true });
 
-    this.sandboxes.add(sandboxId);
+    const socketPath = join(this.socketDir, `${sandboxId}.sock`);
+    const vsockUdsPath = join(this.socketDir, `${sandboxId}_v.sock`);
+    const rootfsCopyPath = join(this.socketDir, `${sandboxId}.rootfs.ext4`);
+    const cid = this.nextCid++;
+
+    // Copy rootfs so each VM has its own writable filesystem
+    await copyFile(this.rootfsPath, rootfsCopyPath);
+
+    // Start Firecracker process
+    const proc = spawn(this.firecrackerBin, ["--api-sock", socketPath], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    // Wait for the API socket to appear
+    await this.waitForSocket(socketPath, 5000);
+
+    const api = new FirecrackerApi(socketPath);
+
+    // Configure VM
+    await api.put("/machine-config", {
+      vcpu_count: this.vcpuCount,
+      mem_size_mib: this.maxMemoryMb,
+    });
+
+    await api.put("/boot-source", {
+      kernel_image_path: this.kernelImagePath,
+      boot_args: BOOT_ARGS,
+    });
+
+    await api.put("/drives/rootfs", {
+      drive_id: "rootfs",
+      path_on_host: rootfsCopyPath,
+      is_root_device: true,
+      is_read_only: false,
+    });
+
+    await api.put("/vsock", {
+      guest_cid: cid,
+      uds_path: vsockUdsPath,
+    });
+
+    // Start the VM
+    await api.put("/actions", { action_type: "InstanceStart" });
+
+    const state: VmState = { proc, socketPath, vsockUdsPath, rootfsCopyPath, cid, api };
+    this.vms.set(sandboxId, state);
+
+    // Wait for guest agent to be reachable
+    await this.waitForAgent(vsockUdsPath, 10000);
   }
 
-  /**
-   * Execute code inside a running Firecracker microVM.
-   *
-   * Communication options:
-   * - vsock: Guest agent listens on a vsock port, host sends code and receives results
-   * - serial: Write code to serial console, read structured output back
-   */
   async execute(sandboxId: string, code: string, timeoutMs: number): Promise<ExecutionResult> {
     this.assertLinux();
 
-    // TODO: Implement code execution via vsock/serial
-    // 1. Connect to guest agent via vsock (CID + port)
-    // 2. Send { code, timeoutMs } to guest agent
-    // 3. Guest agent writes code to /tmp/job.js, runs `node /tmp/job.js`
-    // 4. Guest agent returns { stdout, stderr, exitCode, durationMs, timedOut }
+    const vm = this.vms.get(sandboxId);
+    if (!vm) {
+      throw new Error(`Sandbox not found: ${sandboxId}`);
+    }
 
-    return {
-      stdout: "",
-      stderr: "Firecracker execution not yet implemented",
-      exitCode: 1,
-      durationMs: 0,
-      timedOut: false,
-    };
+    return this.sendToAgent(vm.vsockUdsPath, code, timeoutMs);
   }
 
-  /**
-   * Destroy a Firecracker microVM.
-   *
-   * Steps:
-   * 1. Send InstanceHalt action via Firecracker API
-   * 2. Kill the Firecracker process
-   * 3. Clean up the Unix socket
-   */
   async destroy(sandboxId: string): Promise<void> {
     this.assertLinux();
 
-    // TODO: Implement VM destruction
-    // 1. PUT /actions { action_type: "SendCtrlAltDel" } to graceful shutdown
-    // 2. Kill firecracker process
-    // 3. Remove socket file
+    const vm = this.vms.get(sandboxId);
+    if (!vm) {
+      throw new Error(`Sandbox not found: ${sandboxId}`);
+    }
 
-    this.sandboxes.delete(sandboxId);
+    // Try graceful shutdown
+    try {
+      await vm.api.put("/actions", { action_type: "SendCtrlAltDel" });
+      await this.waitForProcessExit(vm.proc, 3000);
+    } catch {
+      // Force kill if graceful shutdown fails
+    }
+
+    if (!vm.proc.killed) {
+      vm.proc.kill("SIGKILL");
+    }
+
+    // Cleanup files
+    await unlink(vm.socketPath).catch(() => {});
+    await unlink(vm.vsockUdsPath).catch(() => {});
+    await unlink(vm.rootfsCopyPath).catch(() => {});
+
+    this.vms.delete(sandboxId);
+  }
+
+  private async waitForSocket(path: string, timeoutMs: number): Promise<void> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try {
+        await access(path);
+        return;
+      } catch {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    throw new Error(`Timeout waiting for socket: ${path}`);
+  }
+
+  private async waitForAgent(vsockUdsPath: string, timeoutMs: number): Promise<void> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try {
+        // Try connecting to the vsock UDS — Firecracker creates this for host-side connections
+        const conn = await this.connectToVsock(vsockUdsPath, 2000);
+        conn.destroy();
+        return;
+      } catch {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    }
+    throw new Error("Timeout waiting for guest agent");
+  }
+
+  private connectToVsock(vsockUdsPath: string, timeoutMs: number): Promise<Socket> {
+    // Firecracker exposes vsock connections via UDS at: {vsockUdsPath}_{port}
+    const udsPath = `${vsockUdsPath}_${VSOCK_PORT}`;
+    return new Promise((resolve, reject) => {
+      const socket = createConnection(udsPath, () => {
+        clearTimeout(timer);
+        resolve(socket);
+      });
+      const timer = setTimeout(() => {
+        socket.destroy();
+        reject(new Error("Connection timeout"));
+      }, timeoutMs);
+      socket.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+  }
+
+  private async sendToAgent(vsockUdsPath: string, code: string, timeoutMs: number): Promise<ExecutionResult> {
+    const socket = await this.connectToVsock(vsockUdsPath, 5000);
+
+    return new Promise<ExecutionResult>((resolve, reject) => {
+      let data = "";
+      const timer = setTimeout(() => {
+        socket.destroy();
+        reject(new Error("Agent response timeout"));
+      }, timeoutMs + 5000); // extra buffer for agent overhead
+
+      socket.on("data", (chunk) => {
+        data += chunk.toString();
+        const newlineIdx = data.indexOf("\n");
+        if (newlineIdx !== -1) {
+          clearTimeout(timer);
+          socket.destroy();
+          try {
+            const result = JSON.parse(data.slice(0, newlineIdx));
+            resolve({
+              stdout: result.stdout ?? "",
+              stderr: result.stderr ?? "",
+              exitCode: result.exitCode ?? 1,
+              durationMs: result.durationMs ?? 0,
+              timedOut: result.timedOut ?? false,
+            });
+          } catch (err) {
+            reject(new Error(`Failed to parse agent response: ${data}`));
+          }
+        }
+      });
+
+      socket.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+
+      // Send the execution request
+      const request = JSON.stringify({ type: "execute", code, timeoutMs });
+      socket.write(request + "\n");
+    });
+  }
+
+  private waitForProcessExit(proc: ChildProcess, timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(), timeoutMs);
+      proc.on("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   }
 }

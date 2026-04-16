@@ -1,0 +1,25 @@
+[Unit]
+Description=SandboxJS API Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/sandboxjs/app
+ExecStart=/usr/bin/node dist/server.js
+Environment=NODE_ENV=production
+Environment=SANDBOX_BACKEND=firecracker
+Environment=PORT=3000
+Environment=HOST=0.0.0.0
+Environment=TIMEOUT_MS=5000
+Environment=MAX_MEMORY_MB=256
+Environment=SANDBOX_TTL_MS=300000
+Environment=KERNEL_IMAGE_PATH=/opt/sandboxjs/vmlinux
+Environment=ROOTFS_PATH=/opt/sandboxjs/rootfs.ext4
+Environment=FIRECRACKER_SOCKET_DIR=/tmp/sandboxjs/firecracker
+Environment=FIRECRACKER_BIN=/usr/local/bin/firecracker
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
