@@ -1,12 +1,12 @@
 import Fastify from "fastify";
 import { config } from "./config.js";
 import { SandboxManager } from "./sandbox/manager.js";
-import { ProcessBackend } from "./sandbox/process-backend.js";
+import { createBackend } from "./sandbox/backend-factory.js";
 import { sandboxRoutes } from "./routes/sandboxes.js";
 
 const app = Fastify({ logger: true });
 
-const backend = new ProcessBackend(config.maxMemoryMb);
+const backend = createBackend(config.backendType, config.maxMemoryMb);
 const manager = new SandboxManager(backend, config.defaultTimeoutMs, config.sandboxTtlMs);
 
 // Health check

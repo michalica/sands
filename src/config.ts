@@ -1,6 +1,7 @@
 export const config = {
   port: parseInt(process.env.PORT ?? "3000", 10),
   host: process.env.HOST ?? "0.0.0.0",
+  backendType: process.env.SANDBOX_BACKEND ?? "process",
   defaultTimeoutMs: parseInt(process.env.TIMEOUT_MS ?? "5000", 10),
   maxMemoryMb: parseInt(process.env.MAX_MEMORY_MB ?? "256", 10),
   sandboxTtlMs: parseInt(process.env.SANDBOX_TTL_MS ?? "300000", 10),
