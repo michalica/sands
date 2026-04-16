@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import type { SandboxBackend, SandboxInfo, ExecutionResult } from "./types.js";
+import { ExecutionLog } from "./execution-log.js";
 
 export class SandboxManager {
   private sandboxes = new Map<string, SandboxInfo>();
@@ -9,6 +10,7 @@ export class SandboxManager {
     private backend: SandboxBackend,
     private defaultTimeoutMs: number = 5000,
     private ttlMs: number = 300_000, // 5 minutes
+    private executionLog: ExecutionLog = new ExecutionLog(),
   ) {}
 
   startTtlCleanup(intervalMs: number = 30_000): void {
@@ -37,7 +39,16 @@ export class SandboxManager {
       throw new SandboxNotFoundError(sandboxId);
     }
     info.lastUsedAt = Date.now();
-    return this.backend.execute(sandboxId, code, timeoutMs ?? this.defaultTimeoutMs);
+    const result = await this.backend.execute(sandboxId, code, timeoutMs ?? this.defaultTimeoutMs);
+    this.executionLog.append(sandboxId, { code, result });
+    return result;
+  }
+
+  getLogs(sandboxId: string) {
+    if (!this.sandboxes.has(sandboxId)) {
+      throw new SandboxNotFoundError(sandboxId);
+    }
+    return this.executionLog.get(sandboxId);
   }
 
   async destroy(sandboxId: string): Promise<void> {
@@ -45,6 +56,7 @@ export class SandboxManager {
       throw new SandboxNotFoundError(sandboxId);
     }
     await this.backend.destroy(sandboxId);
+    this.executionLog.clear(sandboxId);
     this.sandboxes.delete(sandboxId);
   }
 

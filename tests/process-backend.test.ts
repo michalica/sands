@@ -75,6 +75,39 @@ describe("ProcessBackend", () => {
     expect(r2.stdout).toBe("second\n");
   });
 
+  describe("memory limits", () => {
+    it("kills process that exceeds memory limit", { timeout: 15000 }, async () => {
+      const limitedBackend = new ProcessBackend(64);
+      await limitedBackend.create("test-oom");
+
+      const result = await limitedBackend.execute(
+        "test-oom",
+        // Allocate V8 heap memory (arrays of numbers, not Buffers which use native memory)
+        `const a = []; while(true) a.push(new Array(100000).fill(0));`,
+        10000,
+      );
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.timedOut).toBe(false);
+      await limitedBackend.destroy("test-oom");
+    });
+
+    it("allows execution within memory limit", async () => {
+      const limitedBackend = new ProcessBackend(128);
+      await limitedBackend.create("test-mem-ok");
+
+      const result = await limitedBackend.execute(
+        "test-mem-ok",
+        "const buf = Buffer.alloc(10 * 1024 * 1024); console.log('ok');",
+        5000,
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("ok\n");
+      await limitedBackend.destroy("test-mem-ok");
+    });
+  });
+
   it("destroys a sandbox and removes tracking", async () => {
     await backend.create("test-destroy");
     expect(backend.exists("test-destroy")).toBe(true);

@@ -7,6 +7,8 @@ import type { SandboxBackend, ExecutionResult } from "./types.js";
 export class ProcessBackend implements SandboxBackend {
   private sandboxes = new Set<string>();
 
+  constructor(private maxMemoryMb: number = 256) {}
+
   private sandboxDir(sandboxId: string): string {
     return join(tmpdir(), "sandboxjs", sandboxId);
   }
@@ -34,7 +36,7 @@ export class ProcessBackend implements SandboxBackend {
       let timedOut = false;
       let settled = false;
 
-      const child = spawn("node", [filePath], {
+      const child = spawn("node", [`--max-old-space-size=${this.maxMemoryMb}`, filePath], {
         cwd: dir,
         timeout: timeoutMs,
         env: { PATH: process.env.PATH },

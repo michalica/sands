@@ -6,7 +6,7 @@ import { sandboxRoutes } from "./routes/sandboxes.js";
 
 const app = Fastify({ logger: true });
 
-const backend = new ProcessBackend();
+const backend = new ProcessBackend(config.maxMemoryMb);
 const manager = new SandboxManager(backend, config.defaultTimeoutMs, config.sandboxTtlMs);
 
 // Health check

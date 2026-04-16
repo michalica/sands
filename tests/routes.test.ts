@@ -1,13 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import Fastify from "fastify";
 import { SandboxManager } from "../src/sandbox/manager.js";
+import { ExecutionLog } from "../src/sandbox/execution-log.js";
 import { ProcessBackend } from "../src/sandbox/process-backend.js";
 import { sandboxRoutes } from "../src/routes/sandboxes.js";
 
 describe("API routes", () => {
   const app = Fastify();
   const backend = new ProcessBackend();
-  const manager = new SandboxManager(backend, 5000);
+  const log = new ExecutionLog();
+  const manager = new SandboxManager(backend, 5000, 300_000, log);
 
   beforeAll(async () => {
     app.get("/health", async () => ({ status: "ok", activeSandboxes: manager.activeSandboxCount }));
@@ -117,6 +119,56 @@ describe("API routes", () => {
       });
 
       expect(res.statusCode).toBe(400);
+
+      await manager.destroy(sandboxId);
+    });
+  });
+
+  describe("GET /sandboxes/:id/logs", () => {
+    it("returns execution logs for a sandbox", async () => {
+      const create = await app.inject({ method: "POST", url: "/sandboxes" });
+      const { sandboxId } = create.json();
+
+      await app.inject({
+        method: "POST",
+        url: `/sandboxes/${sandboxId}/execute`,
+        payload: { code: "console.log('a')" },
+      });
+      await app.inject({
+        method: "POST",
+        url: `/sandboxes/${sandboxId}/execute`,
+        payload: { code: "console.log('b')" },
+      });
+
+      const res = await app.inject({ method: "GET", url: `/sandboxes/${sandboxId}/logs` });
+
+      expect(res.statusCode).toBe(200);
+      const logs = res.json();
+      expect(logs).toHaveLength(2);
+      expect(logs[0].code).toBe("console.log('a')");
+      expect(logs[0].executionId).toBeDefined();
+      expect(logs[0].timestamp).toBeTypeOf("number");
+      expect(logs[0].result.stdout).toBe("a\n");
+      expect(logs[1].code).toBe("console.log('b')");
+
+      await manager.destroy(sandboxId);
+    });
+
+    it("returns 404 for nonexistent sandbox", async () => {
+      const res = await app.inject({ method: "GET", url: "/sandboxes/nonexistent/logs" });
+
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toEqual({ error: "Sandbox not found" });
+    });
+
+    it("returns empty array for sandbox with no executions", async () => {
+      const create = await app.inject({ method: "POST", url: "/sandboxes" });
+      const { sandboxId } = create.json();
+
+      const res = await app.inject({ method: "GET", url: `/sandboxes/${sandboxId}/logs` });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual([]);
 
       await manager.destroy(sandboxId);
     });

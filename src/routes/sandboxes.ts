@@ -50,6 +50,21 @@ export async function sandboxRoutes(app: FastifyInstance, manager: SandboxManage
     },
   );
 
+  // Get execution logs
+  app.get<{ Params: SandboxParams }>("/sandboxes/:id/logs", async (request, reply) => {
+    const { id } = request.params;
+
+    try {
+      return manager.getLogs(id);
+    } catch (err) {
+      if (err instanceof SandboxNotFoundError) {
+        reply.code(404);
+        return { error: "Sandbox not found" };
+      }
+      throw err;
+    }
+  });
+
   // Destroy sandbox
   app.delete<{ Params: SandboxParams }>("/sandboxes/:id", async (request, reply) => {
     const { id } = request.params;

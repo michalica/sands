@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { SandboxManager, SandboxNotFoundError } from "../src/sandbox/manager.js";
+import { ExecutionLog } from "../src/sandbox/execution-log.js";
 import type { SandboxBackend, ExecutionResult } from "../src/sandbox/types.js";
 
 function createMockBackend(): SandboxBackend {
@@ -20,11 +21,13 @@ function createMockBackend(): SandboxBackend {
 
 describe("SandboxManager", () => {
   let backend: ReturnType<typeof createMockBackend>;
+  let log: ExecutionLog;
   let manager: SandboxManager;
 
   beforeEach(() => {
     backend = createMockBackend();
-    manager = new SandboxManager(backend, 5000, 1000);
+    log = new ExecutionLog();
+    manager = new SandboxManager(backend, 5000, 1000, log);
   });
 
   describe("create", () => {
@@ -100,6 +103,42 @@ describe("SandboxManager", () => {
       await manager.destroy(info.sandboxId);
 
       await expect(manager.destroy(info.sandboxId)).rejects.toThrow(SandboxNotFoundError);
+    });
+  });
+
+  describe("execution logs", () => {
+    it("records logs on execute", async () => {
+      const info = await manager.create();
+      await manager.execute(info.sandboxId, "console.log('hi')");
+
+      const logs = manager.getLogs(info.sandboxId);
+      expect(logs).toHaveLength(1);
+      expect(logs[0].code).toBe("console.log('hi')");
+      expect(logs[0].result.stdout).toBe("ok\n");
+    });
+
+    it("records multiple executions", async () => {
+      const info = await manager.create();
+      await manager.execute(info.sandboxId, "a");
+      await manager.execute(info.sandboxId, "b");
+
+      const logs = manager.getLogs(info.sandboxId);
+      expect(logs).toHaveLength(2);
+      expect(logs[0].code).toBe("a");
+      expect(logs[1].code).toBe("b");
+    });
+
+    it("clears logs on destroy", async () => {
+      const info = await manager.create();
+      await manager.execute(info.sandboxId, "code");
+      await manager.destroy(info.sandboxId);
+
+      // After destroy, logs should be cleared
+      expect(log.get(info.sandboxId)).toEqual([]);
+    });
+
+    it("throws SandboxNotFoundError for getLogs on unknown id", () => {
+      expect(() => manager.getLogs("nonexistent")).toThrow(SandboxNotFoundError);
     });
   });
 
