@@ -47,7 +47,24 @@ curl -fsSL -o "ubuntu.squashfs" "https://s3.amazonaws.com/spec.ccfc.min/${latest
 echo "[..] Extracting squashfs..."
 sudo unsquashfs ubuntu.squashfs
 
-# 3. Install Node.js and socat into the rootfs
+# 3. Set up DNS + mount points for chroot
+echo "[..] Preparing chroot..."
+sudo cp /etc/resolv.conf squashfs-root/etc/resolv.conf
+sudo mount --bind /proc squashfs-root/proc
+sudo mount --bind /sys squashfs-root/sys
+sudo mount --bind /dev squashfs-root/dev
+
+# Update cleanup to unmount
+cleanup() {
+  sudo umount squashfs-root/proc 2>/dev/null || true
+  sudo umount squashfs-root/sys 2>/dev/null || true
+  sudo umount squashfs-root/dev 2>/dev/null || true
+  cd /
+  sudo rm -rf "$TMPDIR"
+}
+trap cleanup EXIT
+
+# 4. Install Node.js and socat into the rootfs
 echo "[..] Installing Node.js and socat..."
 sudo chroot squashfs-root /bin/bash -c "
   apt-get update -qq
@@ -59,12 +76,15 @@ sudo chroot squashfs-root /bin/bash -c "
   node --version
 "
 
-# 4. Copy guest agent
+# Unmount before creating image
+sudo umount squashfs-root/proc squashfs-root/sys squashfs-root/dev 2>/dev/null || true
+
+# 5. Copy guest agent
 echo "[..] Installing guest agent..."
 sudo mkdir -p squashfs-root/opt/agent
 sudo cp "$AGENT_DIR/agent.js" squashfs-root/opt/agent/agent.js
 
-# 5. Create init wrapper that starts the agent on boot
+# 6. Create init wrapper that starts the agent on boot
 sudo tee squashfs-root/etc/systemd/system/sandboxjs-agent.service > /dev/null << 'EOF'
 [Unit]
 Description=SandboxJS Guest Agent
@@ -81,13 +101,13 @@ EOF
 
 sudo chroot squashfs-root /bin/bash -c "systemctl enable sandboxjs-agent" 2>/dev/null || true
 
-# 6. Create ext4 image
+# 7. Create ext4 image
 echo "[..] Creating ext4 image..."
 sudo chown -R root:root squashfs-root
 truncate -s 1G rootfs.ext4
 sudo mkfs.ext4 -d squashfs-root -F rootfs.ext4
 
-# 7. Verify and move to final location
+# 8. Verify and move to final location
 e2fsck -fn rootfs.ext4 > /dev/null 2>&1
 sudo mv rootfs.ext4 "$OUTPUT"
 sudo chown "$USER:$USER" "$OUTPUT"
