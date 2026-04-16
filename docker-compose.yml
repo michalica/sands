@@ -1,0 +1,11 @@
+services:
+  api:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      HOST: "0.0.0.0"
+      TIMEOUT_MS: "5000"
+      MAX_MEMORY_MB: "256"
+      SANDBOX_TTL_MS: "300000"
