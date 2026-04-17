@@ -22,7 +22,7 @@ const backend = createBackend({
     chrootBaseDir: config.chrootBaseDir,
   },
 });
-const manager = new SandboxManager(backend, config.defaultTimeoutMs, config.sandboxTtlMs);
+const manager = new SandboxManager(backend, config.defaultTimeoutMs, config.sandboxTtlMs, undefined, config.maxSandboxes);
 
 // Health check
 app.get("/health", async () => ({ status: "ok", activeSandboxes: manager.activeSandboxCount }));

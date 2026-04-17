@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { SandboxManager, SandboxNotFoundError } from "../sandbox/manager.js";
+import { SandboxManager, SandboxNotFoundError, SandboxLimitError } from "../sandbox/manager.js";
 
 interface ExecuteBody {
   code: string;
@@ -13,9 +13,17 @@ interface SandboxParams {
 export async function sandboxRoutes(app: FastifyInstance, manager: SandboxManager) {
   // Create sandbox
   app.post("/sandboxes", async (_request, reply) => {
-    const info = await manager.create();
-    reply.code(201);
-    return { sandboxId: info.sandboxId };
+    try {
+      const info = await manager.create();
+      reply.code(201);
+      return { sandboxId: info.sandboxId };
+    } catch (err) {
+      if (err instanceof SandboxLimitError) {
+        reply.code(429);
+        return { error: err.message };
+      }
+      throw err;
+    }
   });
 
   // Execute code

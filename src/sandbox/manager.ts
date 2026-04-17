@@ -11,6 +11,7 @@ export class SandboxManager {
     private defaultTimeoutMs: number = 5000,
     private ttlMs: number = 300_000, // 5 minutes
     private executionLog: ExecutionLog = new ExecutionLog(),
+    private maxSandboxes: number = 0, // 0 = unlimited
   ) {}
 
   startTtlCleanup(intervalMs: number = 30_000): void {
@@ -25,6 +26,9 @@ export class SandboxManager {
   }
 
   async create(): Promise<SandboxInfo> {
+    if (this.maxSandboxes > 0 && this.sandboxes.size >= this.maxSandboxes) {
+      throw new SandboxLimitError(this.maxSandboxes);
+    }
     const sandboxId = uuidv4();
     const now = Date.now();
     const info: SandboxInfo = { sandboxId, createdAt: now, lastUsedAt: now };
@@ -79,5 +83,12 @@ export class SandboxNotFoundError extends Error {
   constructor(sandboxId: string) {
     super(`Sandbox not found: ${sandboxId}`);
     this.name = "SandboxNotFoundError";
+  }
+}
+
+export class SandboxLimitError extends Error {
+  constructor(max: number) {
+    super(`Sandbox limit reached: maximum ${max} concurrent sandboxes`);
+    this.name = "SandboxLimitError";
   }
 }

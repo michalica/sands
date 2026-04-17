@@ -4,6 +4,7 @@ export const config = {
   backendType: process.env.SANDBOX_BACKEND ?? "process",
   defaultTimeoutMs: parseInt(process.env.TIMEOUT_MS ?? "5000", 10),
   maxMemoryMb: parseInt(process.env.MAX_MEMORY_MB ?? "256", 10),
+  maxSandboxes: parseInt(process.env.MAX_SANDBOXES ?? "12", 10),
   sandboxTtlMs: parseInt(process.env.SANDBOX_TTL_MS ?? "300000", 10),
   ttlCleanupIntervalMs: parseInt(process.env.TTL_CLEANUP_INTERVAL_MS ?? "30000", 10),
   // Firecracker-specific
@@ -16,6 +17,6 @@ export const config = {
   jailerBin: process.env.JAILER_BIN ?? "/usr/local/bin/jailer",
   jailerUid: parseInt(process.env.JAILER_UID ?? "1000", 10),
   jailerGid: parseInt(process.env.JAILER_GID ?? "1000", 10),
-  cpuQuotaPercent: parseInt(process.env.CPU_QUOTA_PERCENT ?? "50", 10),
+  cpuQuotaPercent: parseInt(process.env.CPU_QUOTA_PERCENT ?? "25", 10),
   chrootBaseDir: process.env.CHROOT_BASE_DIR ?? "/srv/jailer",
 } as const;
