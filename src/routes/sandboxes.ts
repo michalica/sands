@@ -11,6 +11,29 @@ interface SandboxParams {
 }
 
 export async function sandboxRoutes(app: FastifyInstance, manager: SandboxManager) {
+  // List all sandboxes
+  app.get("/sandboxes", async () => {
+    return {
+      sandboxes: manager.listSandboxes(),
+      count: manager.activeSandboxCount,
+      maxCount: manager.maxSandboxCount,
+    };
+  });
+
+  // Get sandbox detail
+  app.get<{ Params: SandboxParams }>("/sandboxes/:id", async (request, reply) => {
+    const { id } = request.params;
+    try {
+      return manager.getSandbox(id);
+    } catch (err) {
+      if (err instanceof SandboxNotFoundError) {
+        reply.code(404);
+        return { error: "Sandbox not found" };
+      }
+      throw err;
+    }
+  });
+
   // Create sandbox
   app.post("/sandboxes", async (_request, reply) => {
     try {

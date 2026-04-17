@@ -11,15 +11,17 @@ export interface LogEntry {
 export class ExecutionLog {
   private logs = new Map<string, LogEntry[]>();
 
-  append(sandboxId: string, input: { code: string; result: ExecutionResult }): void {
+  append(sandboxId: string, input: { code: string; result: ExecutionResult }): LogEntry {
     const entries = this.logs.get(sandboxId) ?? [];
-    entries.push({
+    const entry: LogEntry = {
       executionId: uuidv4(),
       timestamp: Date.now(),
       code: input.code,
       result: input.result,
-    });
+    };
+    entries.push(entry);
     this.logs.set(sandboxId, entries);
+    return entry;
   }
 
   get(sandboxId: string): LogEntry[] {

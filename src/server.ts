@@ -1,10 +1,17 @@
 import Fastify from "fastify";
+import cors from "@fastify/cors";
+import websocket from "@fastify/websocket";
 import { config } from "./config.js";
 import { SandboxManager } from "./sandbox/manager.js";
 import { createBackend } from "./sandbox/backend-factory.js";
 import { sandboxRoutes } from "./routes/sandboxes.js";
+import { metricsRoutes } from "./routes/metrics.js";
+import { eventsRoutes } from "./routes/events.js";
 
 const app = Fastify({ logger: true });
+
+await app.register(cors, { origin: true });
+await app.register(websocket);
 
 const backend = createBackend({
   type: config.backendType,
@@ -29,6 +36,8 @@ app.get("/health", async () => ({ status: "ok", activeSandboxes: manager.activeS
 
 // Register routes
 await sandboxRoutes(app, manager);
+await metricsRoutes(app, manager);
+await eventsRoutes(app);
 
 // Start
 manager.startTtlCleanup(config.ttlCleanupIntervalMs);

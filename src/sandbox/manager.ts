@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import type { SandboxBackend, SandboxInfo, ExecutionResult } from "./types.js";
 import { ExecutionLog } from "./execution-log.js";
+import { broadcastEvent } from "../routes/events.js";
 
 export class SandboxManager {
   private sandboxes = new Map<string, SandboxInfo>();
@@ -34,6 +35,7 @@ export class SandboxManager {
     const info: SandboxInfo = { sandboxId, createdAt: now, lastUsedAt: now };
     await this.backend.create(sandboxId);
     this.sandboxes.set(sandboxId, info);
+    broadcastEvent({ type: "sandbox:created", sandboxId, createdAt: now });
     return info;
   }
 
@@ -44,7 +46,8 @@ export class SandboxManager {
     }
     info.lastUsedAt = Date.now();
     const result = await this.backend.execute(sandboxId, code, timeoutMs ?? this.defaultTimeoutMs);
-    this.executionLog.append(sandboxId, { code, result });
+    const entry = this.executionLog.append(sandboxId, { code, result });
+    broadcastEvent({ type: "execution:completed", sandboxId, executionId: entry.executionId, code, result });
     return result;
   }
 
@@ -62,10 +65,35 @@ export class SandboxManager {
     await this.backend.destroy(sandboxId);
     this.executionLog.clear(sandboxId);
     this.sandboxes.delete(sandboxId);
+    broadcastEvent({ type: "sandbox:destroyed", sandboxId });
   }
 
   get activeSandboxCount(): number {
     return this.sandboxes.size;
+  }
+
+  get maxSandboxCount(): number {
+    return this.maxSandboxes;
+  }
+
+  listSandboxes() {
+    return Array.from(this.sandboxes.values()).map((info) => ({
+      ...info,
+      executionCount: this.executionLog.get(info.sandboxId).length,
+    }));
+  }
+
+  getSandbox(sandboxId: string) {
+    const info = this.sandboxes.get(sandboxId);
+    if (!info) {
+      throw new SandboxNotFoundError(sandboxId);
+    }
+    const logs = this.executionLog.get(sandboxId);
+    return {
+      ...info,
+      executionCount: logs.length,
+      lastExecution: logs.length > 0 ? logs[logs.length - 1] : null,
+    };
   }
 
   private async evictExpired(): Promise<void> {
