@@ -58,14 +58,12 @@ sudo unsquashfs ubuntu.squashfs
 # 3. Copy node and socat binaries + their libs from the host
 echo "[..] Copying node binary from host..."
 NODE_BIN=$(which node)
-SOCAT_BIN=$(which socat)
 
 sudo cp "$NODE_BIN" squashfs-root/usr/local/bin/node
-sudo cp "$SOCAT_BIN" squashfs-root/usr/local/bin/socat
 
-# Copy shared libraries that node and socat need
+# Copy shared libraries that node needs
 echo "[..] Copying shared libraries..."
-for bin in "$NODE_BIN" "$SOCAT_BIN"; do
+for bin in "$NODE_BIN"; do
   ldd "$bin" 2>/dev/null | grep -oP '/\S+' | while read lib; do
     if [ -f "$lib" ]; then
       # Preserve directory structure
@@ -93,7 +91,10 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/socat VSOCK-LISTEN:9999,reuseaddr,fork EXEC:/usr/local/bin/node /opt/agent/agent.js
+ExecStart=/usr/local/bin/node /opt/agent/agent.js
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/ttyS0
 Restart=always
 
 [Install]

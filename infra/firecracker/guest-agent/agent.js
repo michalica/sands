@@ -1,41 +1,49 @@
 #!/usr/bin/env node
 
 /**
- * SandboxJS Guest Agent
+ * SandboxJS Guest Agent — Serial Console Mode
  *
- * Runs inside a Firecracker microVM. Receives JS code over stdin (one JSON line),
- * executes it with Node.js, and writes the result as JSON to stdout.
- *
- * Used with socat: socat VSOCK-LISTEN:9999,fork EXEC:"node /opt/agent/agent.js"
+ * Runs inside a Firecracker microVM. Communicates with the host
+ * via the serial console (/dev/ttyS0), which maps to Firecracker's
+ * stdin/stdout on the host side.
  *
  * Protocol:
- *   Input:  {"type":"execute","code":"...","timeoutMs":5000}\n
- *   Output: {"stdout":"...","stderr":"","exitCode":0,"durationMs":12,"timedOut":false}\n
+ *   Host → Guest (via serial stdin):
+ *     {"type":"execute","code":"...","timeoutMs":5000}\n
+ *
+ *   Guest → Host (via serial stdout):
+ *     {"stdout":"...","stderr":"","exitCode":0,"durationMs":12,"timedOut":false}\n
  */
 
 const { spawn } = require("child_process");
-const { writeFileSync } = require("fs");
+const { writeFileSync, openSync, createReadStream, createWriteStream } = require("fs");
+const { createInterface } = require("readline");
 
-let input = "";
+// Open serial console for communication
+const serialIn = createReadStream("/dev/ttyS0");
+const serialOut = createWriteStream("/dev/ttyS0");
 
-process.stdin.setEncoding("utf-8");
-process.stdin.on("data", (chunk) => {
-  input += chunk;
-  const newlineIdx = input.indexOf("\n");
-  if (newlineIdx !== -1) {
-    const line = input.slice(0, newlineIdx);
-    input = input.slice(newlineIdx + 1);
-    handleRequest(line);
-  }
-});
+function sendResponse(data) {
+  serialOut.write(JSON.stringify(data) + "\n");
+}
 
-function handleRequest(line) {
+// Signal to host that we're ready
+sendResponse = function(data) {
+  serialOut.write(JSON.stringify(data) + "\n");
+};
+
+// Tell host we're ready
+serialOut.write("SANDBOXJS_AGENT_READY\n");
+
+// Read lines from serial
+const rl = createInterface({ input: serialIn });
+
+rl.on("line", (line) => {
   let request;
   try {
-    request = JSON.parse(line);
+    request = JSON.parse(line.trim());
   } catch {
-    sendResponse({ error: "Invalid JSON" });
-    return;
+    return; // Ignore non-JSON lines (kernel messages etc.)
   }
 
   if (request.type !== "execute" || typeof request.code !== "string") {
@@ -97,8 +105,4 @@ function handleRequest(line) {
       timedOut: false,
     });
   });
-}
-
-function sendResponse(data) {
-  process.stdout.write(JSON.stringify(data) + "\n");
-}
+});
