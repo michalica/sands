@@ -1,5 +1,6 @@
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { copyFile, link, mkdir, access, rm } from "node:fs/promises";
+import { copyFile, link, mkdir, access, rm, open } from "node:fs/promises";
+import { createWriteStream, type WriteStream } from "node:fs";
 import { join, basename } from "node:path";
 import type { SandboxBackend, ExecutionResult } from "./types.js";
 import { FirecrackerApi } from "./firecracker-api.js";
@@ -28,6 +29,8 @@ interface VmState {
   jailId: string;
   chrootPath: string;
   apiSocketPath: string;
+  serialInputPath: string;
+  serialInput: WriteStream | null;
   api: FirecrackerApi;
   serialBuffer: string;
   ready: boolean;
@@ -129,7 +132,6 @@ export class FirecrackerBackend implements SandboxBackend {
     await mkdir(chrootPath, { recursive: true });
 
     // Hard-link (or copy) kernel and rootfs into the chroot
-    // Paths inside chroot are relative: /vmlinux, /rootfs.ext4
     const chrootKernel = join(chrootPath, "vmlinux");
     const chrootRootfs = join(chrootPath, "rootfs.ext4");
 
@@ -140,25 +142,33 @@ export class FirecrackerBackend implements SandboxBackend {
     }
     await copyFile(this.rootfsPath, chrootRootfs);
 
+    // Create a FIFO for serial input (jailer closes stdin, so we need a pipe)
+    const serialInputPath = join(chrootPath, "serial.in");
+    execSync(`mkfifo ${serialInputPath}`);
+
     // Set ownership so the jailed process (uid/gid) can access the files
     execSync(`chown -R ${this.jailerUid}:${this.jailerGid} ${chrootPath}`);
 
-    // Spawn jailer
+    // Spawn jailer with stdin from the FIFO
+    // We use a shell wrapper to redirect the FIFO to stdin
     const args = this.buildJailerArgs(sandboxId);
-    console.log(`[jailer] spawning: ${this.jailerBin} ${args.join(" ")}`);
-    const proc = spawn(this.jailerBin, args, {
-      stdio: ["pipe", "pipe", "pipe"],
+    console.log(`[jailer] spawning with FIFO serial input`);
+    const proc = spawn("sh", ["-c", `${this.jailerBin} ${args.map(a => `'${a}'`).join(" ")} < ${serialInputPath}`], {
+      stdio: ["ignore", "pipe", "pipe"],
     });
 
+    // Open the FIFO for writing (must happen after the reader opens it)
+    // Opening FIFO for write blocks until a reader exists, so do it after spawn
+    await new Promise((r) => setTimeout(r, 500));
+    const serialInput = createWriteStream(serialInputPath, { flags: "w" });
+
     // Capture early exit / errors
-    let jailerError = "";
     proc.stderr!.on("data", (chunk: Buffer) => {
-      jailerError += chunk.toString();
       console.log(`[jailer:${jailId.slice(0, 8)}] stderr: ${chunk.toString().trim()}`);
     });
     proc.on("exit", (code) => {
       if (code !== null && code !== 0) {
-        console.log(`[jailer:${jailId.slice(0, 8)}] exited with code ${code}: ${jailerError}`);
+        console.log(`[jailer:${jailId.slice(0, 8)}] exited with code ${code}`);
       }
     });
 
@@ -193,6 +203,8 @@ export class FirecrackerBackend implements SandboxBackend {
       jailId,
       chrootPath,
       apiSocketPath,
+      serialInputPath,
+      serialInput,
       api,
       serialBuffer: "",
       ready: false,
@@ -203,10 +215,6 @@ export class FirecrackerBackend implements SandboxBackend {
     // Listen for serial output from the VM
     proc.stdout!.on("data", (chunk: Buffer) => {
       this.handleSerialData(sandboxId, chunk.toString());
-    });
-
-    proc.stderr!.on("data", (chunk: Buffer) => {
-      console.log(`[jailer:${jailId.slice(0, 8)}] stderr: ${chunk.toString().slice(0, 200)}`);
     });
 
     this.vms.set(sandboxId, state);
@@ -248,11 +256,14 @@ export class FirecrackerBackend implements SandboxBackend {
         reject(err);
       };
 
-      // Send code to guest agent via serial console (stdin)
+      // Send code to guest agent via serial FIFO
       const request = JSON.stringify({ type: "execute", code, timeoutMs });
-      console.log(`[jailer:${vm.jailId.slice(0, 8)}] sending to stdin: ${request.slice(0, 100)}`);
-      const written = vm.proc.stdin!.write(request + "\n");
-      console.log(`[jailer:${vm.jailId.slice(0, 8)}] stdin.write returned: ${written}, stdin.writable: ${vm.proc.stdin!.writable}`);
+      console.log(`[jailer:${vm.jailId.slice(0, 8)}] sending to serial FIFO`);
+      if (vm.serialInput) {
+        vm.serialInput.write(request + "\n");
+      } else {
+        reject(new Error("Serial input not available"));
+      }
     });
   }
 
@@ -267,6 +278,11 @@ export class FirecrackerBackend implements SandboxBackend {
     // Reject any pending execution
     if (vm.pendingReject) {
       vm.pendingReject(new Error("Sandbox destroyed"));
+    }
+
+    // Close serial input FIFO
+    if (vm.serialInput) {
+      vm.serialInput.end();
     }
 
     // Try graceful shutdown
