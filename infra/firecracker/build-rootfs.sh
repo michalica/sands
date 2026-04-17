@@ -56,23 +56,26 @@ if [ -n "$LINKER" ] && [ -f "$LINKER" ]; then
   cp -n "$LINKER" "$ROOTDIR${LINKER}" 2>/dev/null || true
 fi
 
-# 4. Copy busybox for basic shell utilities (sh, mount, etc.)
+# 4. Copy busybox (or sh) + their shared libraries
+echo "[..] Copying shell..."
 if command -v busybox &>/dev/null; then
-  cp "$(which busybox)" "$ROOTDIR/bin/busybox"
-  # Create essential symlinks
+  SHELL_BIN=$(which busybox)
+  cp "$SHELL_BIN" "$ROOTDIR/bin/busybox"
   for cmd in sh mount umount mkdir cat ls sleep; do
     ln -sf busybox "$ROOTDIR/bin/$cmd"
   done
 else
-  # Fallback: copy bash and coreutils
-  cp /bin/sh "$ROOTDIR/bin/sh"
-  ldd /bin/sh 2>/dev/null | grep -oP '/\S+' | while read lib; do
-    if [ -f "$lib" ]; then
-      mkdir -p "$ROOTDIR$(dirname "$lib")"
-      cp -n "$lib" "$ROOTDIR${lib}" 2>/dev/null || true
-    fi
-  done
+  SHELL_BIN=/bin/sh
+  cp "$SHELL_BIN" "$ROOTDIR/bin/sh"
 fi
+
+# Copy shared libraries for shell
+ldd "$SHELL_BIN" 2>/dev/null | grep -oP '/\S+' | while read lib; do
+  if [ -f "$lib" ]; then
+    mkdir -p "$ROOTDIR$(dirname "$lib")"
+    cp -n "$lib" "$ROOTDIR${lib}" 2>/dev/null || true
+  fi
+done
 
 # 5. Copy guest agent
 echo "[..] Installing guest agent..."
