@@ -1,5 +1,5 @@
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { copyFile, link, mkdir, access, rm, open } from "node:fs/promises";
+import { copyFile, link, mkdir, access, rm } from "node:fs/promises";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { join, basename } from "node:path";
 import type { SandboxBackend, ExecutionResult } from "./types.js";
@@ -152,7 +152,6 @@ export class FirecrackerBackend implements SandboxBackend {
     // Spawn jailer with stdin from the FIFO
     // We use a shell wrapper to redirect the FIFO to stdin
     const args = this.buildJailerArgs(sandboxId);
-    console.log(`[jailer] spawning with FIFO serial input`);
     const proc = spawn("sh", ["-c", `${this.jailerBin} ${args.map(a => `'${a}'`).join(" ")} < ${serialInputPath}`], {
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -258,7 +257,6 @@ export class FirecrackerBackend implements SandboxBackend {
 
       // Send code to guest agent via serial FIFO
       const request = JSON.stringify({ type: "execute", code, timeoutMs });
-      console.log(`[jailer:${vm.jailId.slice(0, 8)}] sending to serial FIFO`);
       if (vm.serialInput) {
         vm.serialInput.write(request + "\n");
       } else {
@@ -309,7 +307,6 @@ export class FirecrackerBackend implements SandboxBackend {
     const vm = this.vms.get(sandboxId);
     if (!vm) return;
 
-    console.log(`[serial:${vm.jailId.slice(0, 8)}] received: ${JSON.stringify(data.slice(0, 200))}`);
     vm.serialBuffer += data;
 
     let newlineIdx: number;
