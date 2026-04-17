@@ -10,6 +10,6 @@ export const config = {
   vcpuCount: parseInt(process.env.VCPU_COUNT ?? "1", 10),
   kernelImagePath: process.env.KERNEL_IMAGE_PATH ?? "/opt/sandboxjs/vmlinux",
   rootfsPath: process.env.ROOTFS_PATH ?? "/opt/sandboxjs/rootfs.ext4",
-  firecrackerSocketDir: process.env.FIRECRACKER_SOCKET_DIR ?? "/tmp/sandboxjs/firecracker",
+  firecrackerSocketDir: process.env.FIRECRACKER_SOCKET_DIR ?? "/opt/sandboxjs/vms",
   firecrackerBin: process.env.FIRECRACKER_BIN ?? "/usr/local/bin/firecracker",
 } as const;

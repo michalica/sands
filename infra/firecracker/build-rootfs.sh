@@ -109,7 +109,7 @@ sudo ln -sf /etc/systemd/system/sandboxjs-agent.service \
 # 6. Create ext4 image
 echo "[..] Creating ext4 image..."
 sudo chown -R root:root squashfs-root
-truncate -s 1G rootfs.ext4
+truncate -s 300M rootfs.ext4
 sudo mkfs.ext4 -d squashfs-root -F rootfs.ext4
 
 # 7. Verify and move to final location
