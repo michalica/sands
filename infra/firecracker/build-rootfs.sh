@@ -87,7 +87,8 @@ mount -t devtmpfs devtmpfs /dev
 mkdir -p /tmp
 
 # Start guest agent on serial console
-exec /usr/local/bin/node /opt/agent/agent.js < /dev/ttyS0 > /dev/ttyS0 2>/dev/null
+# stderr goes to /dev/null to avoid mixing with the JSON protocol on ttyS0
+exec /usr/local/bin/node /opt/agent/agent.js </dev/ttyS0 >/dev/ttyS0 2>/tmp/agent.log
 EOF
 chmod +x "$ROOTDIR/init"
 

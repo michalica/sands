@@ -117,7 +117,13 @@ export class FirecrackerBackend implements SandboxBackend {
 
     // Listen for serial output from the VM
     proc.stdout!.on("data", (chunk: Buffer) => {
-      this.handleSerialData(sandboxId, chunk.toString());
+      const text = chunk.toString();
+      console.log(`[FC:${sandboxId.slice(0, 8)}] stdout: ${JSON.stringify(text.slice(0, 200))}`);
+      this.handleSerialData(sandboxId, text);
+    });
+
+    proc.stderr!.on("data", (chunk: Buffer) => {
+      console.log(`[FC:${sandboxId.slice(0, 8)}] stderr: ${chunk.toString().slice(0, 200)}`);
     });
 
     this.vms.set(sandboxId, state);

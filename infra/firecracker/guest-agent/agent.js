@@ -3,51 +3,36 @@
 /**
  * SandboxJS Guest Agent — Serial Console Mode
  *
- * Runs inside a Firecracker microVM. Communicates with the host
- * via the serial console (/dev/ttyS0), which maps to Firecracker's
- * stdin/stdout on the host side.
+ * Communicates via process.stdin/stdout which the init script
+ * connects to /dev/ttyS0 (Firecracker serial console).
  *
  * Protocol:
- *   Host → Guest (via serial stdin):
- *     {"type":"execute","code":"...","timeoutMs":5000}\n
- *
- *   Guest → Host (via serial stdout):
- *     {"stdout":"...","stderr":"","exitCode":0,"durationMs":12,"timedOut":false}\n
+ *   Host → Guest:  {"type":"execute","code":"...","timeoutMs":5000}\n
+ *   Guest → Host:  {"stdout":"...","stderr":"","exitCode":0,"durationMs":12,"timedOut":false}\n
  */
 
 const { spawn } = require("child_process");
-const { writeFileSync, openSync, createReadStream, createWriteStream } = require("fs");
+const { writeFileSync } = require("fs");
 const { createInterface } = require("readline");
 
-// Open serial console for communication
-const serialIn = createReadStream("/dev/ttyS0");
-const serialOut = createWriteStream("/dev/ttyS0");
-
-function sendResponse(data) {
-  serialOut.write(JSON.stringify(data) + "\n");
+function send(data) {
+  process.stdout.write(JSON.stringify(data) + "\n");
 }
 
-// Signal to host that we're ready
-sendResponse = function(data) {
-  serialOut.write(JSON.stringify(data) + "\n");
-};
+// Signal ready
+process.stdout.write("SANDBOXJS_AGENT_READY\n");
 
-// Tell host we're ready
-serialOut.write("SANDBOXJS_AGENT_READY\n");
-
-// Read lines from serial
-const rl = createInterface({ input: serialIn });
+const rl = createInterface({ input: process.stdin });
 
 rl.on("line", (line) => {
   let request;
   try {
     request = JSON.parse(line.trim());
   } catch {
-    return; // Ignore non-JSON lines (kernel messages etc.)
+    return;
   }
 
   if (request.type !== "execute" || typeof request.code !== "string") {
-    sendResponse({ error: "Invalid request" });
     return;
   }
 
@@ -61,7 +46,7 @@ rl.on("line", (line) => {
   let timedOut = false;
   let settled = false;
 
-  const child = spawn("node", ["--max-old-space-size=256", "/tmp/job.js"], {
+  const child = spawn("/usr/local/bin/node", ["--max-old-space-size=256", "/tmp/job.js"], {
     timeout: timeoutMs,
     env: { PATH: "/usr/local/bin:/usr/bin:/bin" },
     stdio: ["ignore", "pipe", "pipe"],
@@ -84,7 +69,7 @@ rl.on("line", (line) => {
     clearTimeout(timer);
     if (settled) return;
     settled = true;
-    sendResponse({
+    send({
       stdout,
       stderr,
       exitCode: exitCode ?? 1,
@@ -97,7 +82,7 @@ rl.on("line", (line) => {
     clearTimeout(timer);
     if (settled) return;
     settled = true;
-    sendResponse({
+    send({
       stdout,
       stderr: stderr + err.message,
       exitCode: 1,
