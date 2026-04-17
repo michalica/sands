@@ -250,7 +250,9 @@ export class FirecrackerBackend implements SandboxBackend {
 
       // Send code to guest agent via serial console (stdin)
       const request = JSON.stringify({ type: "execute", code, timeoutMs });
-      vm.proc.stdin!.write(request + "\n");
+      console.log(`[jailer:${vm.jailId.slice(0, 8)}] sending to stdin: ${request.slice(0, 100)}`);
+      const written = vm.proc.stdin!.write(request + "\n");
+      console.log(`[jailer:${vm.jailId.slice(0, 8)}] stdin.write returned: ${written}, stdin.writable: ${vm.proc.stdin!.writable}`);
     });
   }
 
@@ -291,6 +293,7 @@ export class FirecrackerBackend implements SandboxBackend {
     const vm = this.vms.get(sandboxId);
     if (!vm) return;
 
+    console.log(`[serial:${vm.jailId.slice(0, 8)}] received: ${JSON.stringify(data.slice(0, 200))}`);
     vm.serialBuffer += data;
 
     let newlineIdx: number;
