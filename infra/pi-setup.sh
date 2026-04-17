@@ -63,16 +63,17 @@ else
   curl -fsSL "${release_url}/download/${latest}/firecracker-${latest}-${ARCH}.tgz" \
     | tar xz -C "$TMPDIR"
   sudo mv "$TMPDIR/release-${latest}-${ARCH}/firecracker-${latest}-${ARCH}" "$FIRECRACKER_BIN"
-  sudo chmod +x "$FIRECRACKER_BIN"
+  sudo mv "$TMPDIR/release-${latest}-${ARCH}/jailer-${latest}-${ARCH}" /usr/local/bin/jailer
+  sudo chmod +x "$FIRECRACKER_BIN" /usr/local/bin/jailer
   rm -rf "$TMPDIR"
-  echo "[OK] Firecracker ${latest} installed at $FIRECRACKER_BIN"
+  echo "[OK] Firecracker ${latest} + jailer installed"
 fi
 
 # 6. Create directory structure
 sudo mkdir -p /opt/sandboxjs/scripts
-sudo mkdir -p /tmp/sandboxjs/firecracker
+sudo mkdir -p /opt/sandboxjs/vms
+sudo mkdir -p /srv/jailer
 sudo chown -R "$USER:$USER" /opt/sandboxjs
-sudo chown -R "$USER:$USER" /tmp/sandboxjs
 echo "[OK] Directory structure created"
 
 # 7. Summary
@@ -82,7 +83,7 @@ echo "  Architecture:  $ARCH"
 echo "  KVM:           /dev/kvm"
 echo "  Node.js:       $(node -v)"
 echo "  Firecracker:   $($FIRECRACKER_BIN --version 2>&1 || echo 'run with sudo to check')"
-echo "  socat:         $(socat -V 2>&1 | head -1)"
+echo "  Jailer:        $(jailer --version 2>&1 || echo 'run with sudo to check')"
 echo ""
 echo "Next steps:"
 echo "  1. cd /opt/sandboxjs && make all    # build rootfs + download kernel"

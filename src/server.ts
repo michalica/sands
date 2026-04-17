@@ -15,6 +15,11 @@ const backend = createBackend({
     rootfsPath: config.rootfsPath,
     socketDir: config.firecrackerSocketDir,
     firecrackerBin: config.firecrackerBin,
+    jailerBin: config.jailerBin,
+    jailerUid: config.jailerUid,
+    jailerGid: config.jailerGid,
+    cpuQuotaPercent: config.cpuQuotaPercent,
+    chrootBaseDir: config.chrootBaseDir,
   },
 });
 const manager = new SandboxManager(backend, config.defaultTimeoutMs, config.sandboxTtlMs);

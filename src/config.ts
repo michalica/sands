@@ -12,4 +12,10 @@ export const config = {
   rootfsPath: process.env.ROOTFS_PATH ?? "/opt/sandboxjs/rootfs.ext4",
   firecrackerSocketDir: process.env.FIRECRACKER_SOCKET_DIR ?? "/opt/sandboxjs/vms",
   firecrackerBin: process.env.FIRECRACKER_BIN ?? "/usr/local/bin/firecracker",
+  // Jailer
+  jailerBin: process.env.JAILER_BIN ?? "/usr/local/bin/jailer",
+  jailerUid: parseInt(process.env.JAILER_UID ?? "1000", 10),
+  jailerGid: parseInt(process.env.JAILER_GID ?? "1000", 10),
+  cpuQuotaPercent: parseInt(process.env.CPU_QUOTA_PERCENT ?? "50", 10),
+  chrootBaseDir: process.env.CHROOT_BASE_DIR ?? "/srv/jailer",
 } as const;

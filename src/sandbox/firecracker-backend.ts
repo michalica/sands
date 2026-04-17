@@ -1,12 +1,13 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { copyFile, mkdir, unlink, access } from "node:fs/promises";
-import { join } from "node:path";
+import { spawn, execSync, type ChildProcess } from "node:child_process";
+import { copyFile, link, mkdir, access, rm } from "node:fs/promises";
+import { join, basename } from "node:path";
 import type { SandboxBackend, ExecutionResult } from "./types.js";
 import { FirecrackerApi } from "./firecracker-api.js";
 
 const REQUIRES_LINUX = "FirecrackerBackend requires Linux with KVM enabled";
 const BOOT_ARGS = "console=ttyS0 reboot=k panic=1 pci=off init=/init";
 const AGENT_READY_MARKER = "SANDBOXJS_AGENT_READY";
+const API_SOCKET_NAME = "run/firecracker.socket";
 
 export interface FirecrackerConfig {
   maxMemoryMb: number;
@@ -15,12 +16,18 @@ export interface FirecrackerConfig {
   rootfsPath?: string;
   socketDir?: string;
   firecrackerBin?: string;
+  jailerBin?: string;
+  jailerUid?: number;
+  jailerGid?: number;
+  cpuQuotaPercent?: number;
+  chrootBaseDir?: string;
 }
 
 interface VmState {
   proc: ChildProcess;
-  socketPath: string;
-  rootfsCopyPath: string;
+  jailId: string;
+  chrootPath: string;
+  apiSocketPath: string;
   api: FirecrackerApi;
   serialBuffer: string;
   ready: boolean;
@@ -29,9 +36,9 @@ interface VmState {
 }
 
 /**
- * Firecracker microVM-based sandbox backend.
- * Uses serial console (stdin/stdout) for guest-host communication
- * instead of vsock (which has issues on Raspberry Pi kernels).
+ * Firecracker microVM-based sandbox backend with jailer support.
+ * Uses jailer for chroot, cgroups (CPU limits), privilege dropping.
+ * Uses serial console (stdin/stdout) for guest-host communication.
  */
 export class FirecrackerBackend implements SandboxBackend {
   private vms = new Map<string, VmState>();
@@ -40,22 +47,64 @@ export class FirecrackerBackend implements SandboxBackend {
   private vcpuCount: number;
   private kernelImagePath: string;
   private rootfsPath: string;
-  private socketDir: string;
   private firecrackerBin: string;
+  private jailerBin: string;
+  private jailerUid: number;
+  private jailerGid: number;
+  private cpuQuotaPercent: number;
+  private chrootBaseDir: string;
 
   constructor(config: FirecrackerConfig) {
     this.maxMemoryMb = config.maxMemoryMb;
     this.vcpuCount = config.vcpuCount ?? 1;
     this.kernelImagePath = config.kernelImagePath ?? "/opt/sandboxjs/vmlinux";
     this.rootfsPath = config.rootfsPath ?? "/opt/sandboxjs/rootfs.ext4";
-    this.socketDir = config.socketDir ?? "/tmp/sandboxjs/firecracker";
     this.firecrackerBin = config.firecrackerBin ?? "/usr/local/bin/firecracker";
+    this.jailerBin = config.jailerBin ?? "/usr/local/bin/jailer";
+    this.jailerUid = config.jailerUid ?? 1000;
+    this.jailerGid = config.jailerGid ?? 1000;
+    this.cpuQuotaPercent = config.cpuQuotaPercent ?? 50;
+    this.chrootBaseDir = config.chrootBaseDir ?? "/srv/jailer";
   }
 
   private assertLinux(): void {
     if (process.platform !== "linux") {
       throw new Error(REQUIRES_LINUX);
     }
+  }
+
+  /** Sanitize sandbox ID for jailer: alphanumeric + hyphens only, max 64 chars */
+  sanitizeId(id: string): string {
+    return id.replace(/[^a-zA-Z0-9-]/g, "").slice(0, 64);
+  }
+
+  /** Get the chroot root path for a jailed sandbox */
+  getChrootPath(sandboxId: string): string {
+    const id = this.sanitizeId(sandboxId);
+    const execName = basename(this.firecrackerBin);
+    return join(this.chrootBaseDir, execName, id, "root");
+  }
+
+  /** Get the full host path to the API socket inside the chroot */
+  getApiSocketPath(sandboxId: string): string {
+    return join(this.getChrootPath(sandboxId), API_SOCKET_NAME);
+  }
+
+  /** Build the jailer command-line arguments */
+  buildJailerArgs(sandboxId: string): string[] {
+    const id = this.sanitizeId(sandboxId);
+    const quota = Math.round(this.cpuQuotaPercent * 1000); // e.g. 50% → 50000
+    return [
+      "--id", id,
+      "--exec-file", this.firecrackerBin,
+      "--uid", String(this.jailerUid),
+      "--gid", String(this.jailerGid),
+      "--chroot-base-dir", this.chrootBaseDir,
+      "--cgroup-version", "2",
+      "--cgroup", `cpu.max=${quota} 100000`,
+      "--new-pid-ns",
+      "--", "--api-sock", API_SOCKET_NAME,
+    ];
   }
 
   exists(sandboxId: string): boolean {
@@ -65,38 +114,53 @@ export class FirecrackerBackend implements SandboxBackend {
   async create(sandboxId: string): Promise<void> {
     this.assertLinux();
 
-    await mkdir(this.socketDir, { recursive: true });
+    const jailId = this.sanitizeId(sandboxId);
+    const chrootPath = this.getChrootPath(sandboxId);
+    const apiSocketPath = this.getApiSocketPath(sandboxId);
 
-    const socketPath = join(this.socketDir, `${sandboxId}.sock`);
-    const rootfsCopyPath = join(this.socketDir, `${sandboxId}.rootfs.ext4`);
+    // Jailer creates the chroot dir, but we need to pre-populate resources
+    await mkdir(chrootPath, { recursive: true });
 
-    // Copy rootfs so each VM has its own writable filesystem
-    await copyFile(this.rootfsPath, rootfsCopyPath);
+    // Hard-link (or copy) kernel and rootfs into the chroot
+    // Paths inside chroot are relative: /vmlinux, /rootfs.ext4
+    const chrootKernel = join(chrootPath, "vmlinux");
+    const chrootRootfs = join(chrootPath, "rootfs.ext4");
 
-    // Start Firecracker process — pipe stdin/stdout for serial console communication
-    const proc = spawn(this.firecrackerBin, ["--api-sock", socketPath], {
+    try {
+      await link(this.kernelImagePath, chrootKernel);
+    } catch {
+      await copyFile(this.kernelImagePath, chrootKernel);
+    }
+    await copyFile(this.rootfsPath, chrootRootfs);
+
+    // Set ownership so the jailed process (uid/gid) can access the files
+    execSync(`chown -R ${this.jailerUid}:${this.jailerGid} ${chrootPath}`);
+
+    // Spawn jailer
+    const args = this.buildJailerArgs(sandboxId);
+    const proc = spawn(this.jailerBin, args, {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    // Wait for the API socket to appear
-    await this.waitForSocket(socketPath, 5000);
+    // Wait for API socket
+    await this.waitForSocket(apiSocketPath, 5000);
 
-    const api = new FirecrackerApi(socketPath);
+    const api = new FirecrackerApi(apiSocketPath);
 
-    // Configure VM — no vsock, use serial console instead
+    // Configure VM — paths are relative to chroot
     await api.put("/machine-config", {
       vcpu_count: this.vcpuCount,
       mem_size_mib: this.maxMemoryMb,
     });
 
     await api.put("/boot-source", {
-      kernel_image_path: this.kernelImagePath,
+      kernel_image_path: "/vmlinux",
       boot_args: BOOT_ARGS,
     });
 
     await api.put("/drives/rootfs", {
       drive_id: "rootfs",
-      path_on_host: rootfsCopyPath,
+      path_on_host: "/rootfs.ext4",
       is_root_device: true,
       is_read_only: false,
     });
@@ -106,8 +170,9 @@ export class FirecrackerBackend implements SandboxBackend {
 
     const state: VmState = {
       proc,
-      socketPath,
-      rootfsCopyPath,
+      jailId,
+      chrootPath,
+      apiSocketPath,
       api,
       serialBuffer: "",
       ready: false,
@@ -117,13 +182,11 @@ export class FirecrackerBackend implements SandboxBackend {
 
     // Listen for serial output from the VM
     proc.stdout!.on("data", (chunk: Buffer) => {
-      const text = chunk.toString();
-      console.log(`[FC:${sandboxId.slice(0, 8)}] stdout: ${JSON.stringify(text.slice(0, 200))}`);
-      this.handleSerialData(sandboxId, text);
+      this.handleSerialData(sandboxId, chunk.toString());
     });
 
     proc.stderr!.on("data", (chunk: Buffer) => {
-      console.log(`[FC:${sandboxId.slice(0, 8)}] stderr: ${chunk.toString().slice(0, 200)}`);
+      console.log(`[jailer:${jailId.slice(0, 8)}] stderr: ${chunk.toString().slice(0, 200)}`);
     });
 
     this.vms.set(sandboxId, state);
@@ -145,30 +208,24 @@ export class FirecrackerBackend implements SandboxBackend {
     }
 
     return new Promise<ExecutionResult>((resolve, reject) => {
-      vm.pendingResolve = resolve;
-      vm.pendingReject = reject;
-
       const timer = setTimeout(() => {
         vm.pendingResolve = null;
         vm.pendingReject = null;
         reject(new Error("Agent response timeout"));
       }, timeoutMs + 5000);
 
-      // Store timer ref on the resolve so we can clear it
-      const origResolve = resolve;
       vm.pendingResolve = (result) => {
         clearTimeout(timer);
         vm.pendingResolve = null;
         vm.pendingReject = null;
-        origResolve(result);
+        resolve(result);
       };
 
-      const origReject = reject;
       vm.pendingReject = (err) => {
         clearTimeout(timer);
         vm.pendingResolve = null;
         vm.pendingReject = null;
-        origReject(err);
+        reject(err);
       };
 
       // Send code to guest agent via serial console (stdin)
@@ -202,9 +259,10 @@ export class FirecrackerBackend implements SandboxBackend {
       vm.proc.kill("SIGKILL");
     }
 
-    // Cleanup files
-    await unlink(vm.socketPath).catch(() => {});
-    await unlink(vm.rootfsCopyPath).catch(() => {});
+    // Remove entire chroot directory
+    const execName = basename(this.firecrackerBin);
+    const jailDir = join(this.chrootBaseDir, execName, vm.jailId);
+    await rm(jailDir, { recursive: true, force: true });
 
     this.vms.delete(sandboxId);
   }
@@ -215,19 +273,16 @@ export class FirecrackerBackend implements SandboxBackend {
 
     vm.serialBuffer += data;
 
-    // Process complete lines
     let newlineIdx: number;
     while ((newlineIdx = vm.serialBuffer.indexOf("\n")) !== -1) {
       const line = vm.serialBuffer.slice(0, newlineIdx).trim();
       vm.serialBuffer = vm.serialBuffer.slice(newlineIdx + 1);
 
-      // Check for agent ready signal
       if (line === AGENT_READY_MARKER) {
         vm.ready = true;
         continue;
       }
 
-      // Try to parse as JSON result from agent
       if (vm.pendingResolve && line.startsWith("{")) {
         try {
           const result = JSON.parse(line);
@@ -241,7 +296,7 @@ export class FirecrackerBackend implements SandboxBackend {
             });
           }
         } catch {
-          // Not valid JSON, ignore (kernel boot messages etc.)
+          // Not valid JSON, ignore
         }
       }
     }
@@ -252,14 +307,8 @@ export class FirecrackerBackend implements SandboxBackend {
       const start = Date.now();
       const check = () => {
         const vm = this.vms.get(sandboxId);
-        if (!vm) {
-          reject(new Error("VM disappeared"));
-          return;
-        }
-        if (vm.ready) {
-          resolve();
-          return;
-        }
+        if (!vm) { reject(new Error("VM disappeared")); return; }
+        if (vm.ready) { resolve(); return; }
         if (Date.now() - start > timeoutMs) {
           reject(new Error("Timeout waiting for guest agent"));
           return;
