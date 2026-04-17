@@ -1,34 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Download Firecracker CI Ubuntu rootfs and patch in Node.js + guest agent
-# Avoids chroot apt — just copies binaries directly from the host Pi
+# Build a minimal rootfs with just Node.js + guest agent
+# No Ubuntu, no systemd — just what we need
 
 OUTPUT="/opt/sandboxjs/rootfs.ext4"
 AGENT_DIR="$(cd "$(dirname "$0")/guest-agent" && pwd)"
+ROOTFS_SIZE_MB=150
 
 if [ -f "$OUTPUT" ]; then
   echo "[OK] Rootfs already exists at $OUTPUT"
   exit 0
 fi
 
-# Verify host has what we need
-for cmd in node socat unsquashfs; do
-  if ! command -v "$cmd" &>/dev/null; then
-    echo "ERROR: $cmd not found on host. Run pi-setup.sh first."
-    exit 1
-  fi
-done
+# Verify host has node
+if ! command -v node &>/dev/null; then
+  echo "ERROR: node not found on host. Run pi-setup.sh first."
+  exit 1
+fi
 
-ARCH="$(uname -m)"
-release_url="https://github.com/firecracker-microvm/firecracker/releases"
-latest_version=$(basename $(curl -fsSLI -o /dev/null -w %{url_effective} ${release_url}/latest))
-CI_VERSION=${latest_version%.*}
-
-echo "=== Building rootfs (Firecracker ${latest_version}, CI ${CI_VERSION}) ==="
+echo "=== Building minimal rootfs (${ROOTFS_SIZE_MB}MB) ==="
 
 TMPDIR=$(mktemp -d)
-cd "$TMPDIR"
+ROOTDIR="$TMPDIR/rootfs"
+mkdir -p "$ROOTDIR"
 
 cleanup() {
   cd /
@@ -36,87 +31,82 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 1. Download Ubuntu squashfs from Firecracker CI
-echo "[..] Finding latest Ubuntu rootfs for ${ARCH}..."
-latest_ubuntu_key=$(curl -s "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/ubuntu-&list-type=2" \
-    | grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/ubuntu-[0-9]+\.[0-9]+\.squashfs)(?=</Key>)" \
-    | sort -V | tail -1)
+# 1. Create minimal directory structure
+echo "[..] Creating directory structure..."
+mkdir -p "$ROOTDIR"/{bin,sbin,usr/local/bin,lib,lib64,proc,sys,dev,tmp,opt/agent,etc,run,var/tmp}
 
-if [ -z "$latest_ubuntu_key" ]; then
-  echo "ERROR: Could not find Ubuntu rootfs in S3 bucket"
-  exit 1
-fi
-
-ubuntu_version=$(basename "$latest_ubuntu_key" .squashfs | grep -oE '[0-9]+\.[0-9]+')
-echo "[..] Downloading Ubuntu ${ubuntu_version} rootfs..."
-curl -fsSL -o "ubuntu.squashfs" "https://s3.amazonaws.com/spec.ccfc.min/${latest_ubuntu_key}"
-
-# 2. Extract squashfs
-echo "[..] Extracting squashfs..."
-sudo unsquashfs ubuntu.squashfs
-
-# 3. Copy node and socat binaries + their libs from the host
-echo "[..] Copying node binary from host..."
+# 2. Copy node binary from host
+echo "[..] Copying node binary..."
 NODE_BIN=$(which node)
+cp "$NODE_BIN" "$ROOTDIR/usr/local/bin/node"
 
-sudo cp "$NODE_BIN" squashfs-root/usr/local/bin/node
-
-# Copy shared libraries that node needs
+# 3. Copy shared libraries that node needs
 echo "[..] Copying shared libraries..."
-for bin in "$NODE_BIN"; do
-  ldd "$bin" 2>/dev/null | grep -oP '/\S+' | while read lib; do
-    if [ -f "$lib" ]; then
-      # Preserve directory structure
-      sudo mkdir -p "squashfs-root$(dirname "$lib")"
-      sudo cp -n "$lib" "squashfs-root${lib}" 2>/dev/null || true
-    fi
-  done
+ldd "$NODE_BIN" 2>/dev/null | grep -oP '/\S+' | while read lib; do
+  if [ -f "$lib" ]; then
+    mkdir -p "$ROOTDIR$(dirname "$lib")"
+    cp -n "$lib" "$ROOTDIR${lib}" 2>/dev/null || true
+  fi
 done
 
-# Verify node works in the rootfs
-echo "[..] Verifying node..."
-sudo chroot squashfs-root /usr/local/bin/node --version
+# Also copy the dynamic linker
+LINKER=$(ldd "$NODE_BIN" 2>/dev/null | grep 'ld-linux' | grep -oP '/\S+' | head -1)
+if [ -n "$LINKER" ] && [ -f "$LINKER" ]; then
+  mkdir -p "$ROOTDIR$(dirname "$LINKER")"
+  cp -n "$LINKER" "$ROOTDIR${LINKER}" 2>/dev/null || true
+fi
 
-# 4. Copy guest agent
+# 4. Copy busybox for basic shell utilities (sh, mount, etc.)
+if command -v busybox &>/dev/null; then
+  cp "$(which busybox)" "$ROOTDIR/bin/busybox"
+  # Create essential symlinks
+  for cmd in sh mount umount mkdir cat ls sleep; do
+    ln -sf busybox "$ROOTDIR/bin/$cmd"
+  done
+else
+  # Fallback: copy bash and coreutils
+  cp /bin/sh "$ROOTDIR/bin/sh"
+  ldd /bin/sh 2>/dev/null | grep -oP '/\S+' | while read lib; do
+    if [ -f "$lib" ]; then
+      mkdir -p "$ROOTDIR$(dirname "$lib")"
+      cp -n "$lib" "$ROOTDIR${lib}" 2>/dev/null || true
+    fi
+  done
+fi
+
+# 5. Copy guest agent
 echo "[..] Installing guest agent..."
-sudo mkdir -p squashfs-root/opt/agent
-sudo cp "$AGENT_DIR/agent.js" squashfs-root/opt/agent/agent.js
+cp "$AGENT_DIR/agent.js" "$ROOTDIR/opt/agent/agent.js"
 
-# 5. Create systemd service for the guest agent
-sudo mkdir -p squashfs-root/etc/systemd/system
-sudo tee squashfs-root/etc/systemd/system/sandboxjs-agent.service > /dev/null << 'EOF'
-[Unit]
-Description=SandboxJS Guest Agent
-After=network.target
+# 6. Create init script — boots straight into the agent
+cat > "$ROOTDIR/init" << 'EOF'
+#!/bin/sh
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /tmp
 
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/node /opt/agent/agent.js
-StandardInput=tty
-StandardOutput=tty
-TTYPath=/dev/ttyS0
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
+# Start guest agent on serial console
+exec /usr/local/bin/node /opt/agent/agent.js < /dev/ttyS0 > /dev/ttyS0 2>/dev/null
 EOF
+chmod +x "$ROOTDIR/init"
 
-# Enable the service by creating the symlink directly
-sudo mkdir -p squashfs-root/etc/systemd/system/multi-user.target.wants
-sudo ln -sf /etc/systemd/system/sandboxjs-agent.service \
-  squashfs-root/etc/systemd/system/multi-user.target.wants/sandboxjs-agent.service
+# 7. Verify node works
+echo "[..] Verifying node in rootfs..."
+sudo chroot "$ROOTDIR" /usr/local/bin/node --version
 
-# 6. Create ext4 image
-echo "[..] Creating ext4 image..."
-sudo chown -R root:root squashfs-root
-truncate -s 300M rootfs.ext4
-sudo mkfs.ext4 -d squashfs-root -F rootfs.ext4
+# 8. Create ext4 image
+echo "[..] Creating ${ROOTFS_SIZE_MB}MB ext4 image..."
+sudo chown -R root:root "$ROOTDIR"
+truncate -s "${ROOTFS_SIZE_MB}M" "$TMPDIR/rootfs.ext4"
+sudo mkfs.ext4 -d "$ROOTDIR" -F "$TMPDIR/rootfs.ext4"
 
-# 7. Verify and move to final location
-e2fsck -fn rootfs.ext4 > /dev/null 2>&1
-sudo mv rootfs.ext4 "$OUTPUT"
+# 9. Verify and move
+e2fsck -fn "$TMPDIR/rootfs.ext4" > /dev/null 2>&1
+sudo mv "$TMPDIR/rootfs.ext4" "$OUTPUT"
 sudo chown "$USER:$USER" "$OUTPUT"
 
+ACTUAL_SIZE=$(du -sh "$OUTPUT" | awk '{print $1}')
 echo ""
-echo "[OK] Rootfs: $OUTPUT (Ubuntu ${ubuntu_version} + Node.js $(node --version))"
-ls -lh "$OUTPUT"
+echo "[OK] Rootfs: $OUTPUT ($ACTUAL_SIZE)"
+echo "     Contents: Node.js $(node --version) + guest agent + busybox init"
