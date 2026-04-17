@@ -93,18 +93,25 @@ export class FirecrackerBackend implements SandboxBackend {
   /** Build the jailer command-line arguments */
   buildJailerArgs(sandboxId: string): string[] {
     const id = this.sanitizeId(sandboxId);
-    const quota = Math.round(this.cpuQuotaPercent * 1000); // e.g. 50% → 50000
-    return [
+    const args = [
       "--id", id,
       "--exec-file", this.firecrackerBin,
       "--uid", String(this.jailerUid),
       "--gid", String(this.jailerGid),
       "--chroot-base-dir", this.chrootBaseDir,
-      "--cgroup-version", "2",
-      "--cgroup", `cpu.max=${quota} 100000`,
       "--new-pid-ns",
-      "--", "--api-sock", API_SOCKET_NAME,
     ];
+
+    // Add CPU cgroup limit if configured
+    if (this.cpuQuotaPercent > 0 && this.cpuQuotaPercent < 100) {
+      const quota = Math.round(this.cpuQuotaPercent * 1000);
+      args.push("--cgroup-version", "2");
+      args.push("--cgroup", `cpu.max=${quota} 100000`);
+    }
+
+    // Separator for firecracker args
+    args.push("--", "--api-sock", API_SOCKET_NAME);
+    return args;
   }
 
   exists(sandboxId: string): boolean {
@@ -138,12 +145,25 @@ export class FirecrackerBackend implements SandboxBackend {
 
     // Spawn jailer
     const args = this.buildJailerArgs(sandboxId);
+    console.log(`[jailer] spawning: ${this.jailerBin} ${args.join(" ")}`);
     const proc = spawn(this.jailerBin, args, {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
+    // Capture early exit / errors
+    let jailerError = "";
+    proc.stderr!.on("data", (chunk: Buffer) => {
+      jailerError += chunk.toString();
+      console.log(`[jailer:${jailId.slice(0, 8)}] stderr: ${chunk.toString().trim()}`);
+    });
+    proc.on("exit", (code) => {
+      if (code !== null && code !== 0) {
+        console.log(`[jailer:${jailId.slice(0, 8)}] exited with code ${code}: ${jailerError}`);
+      }
+    });
+
     // Wait for API socket
-    await this.waitForSocket(apiSocketPath, 5000);
+    await this.waitForSocket(apiSocketPath, 10000);
 
     const api = new FirecrackerApi(apiSocketPath);
 
