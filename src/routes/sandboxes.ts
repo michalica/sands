@@ -12,9 +12,10 @@ interface SandboxParams {
 
 export async function sandboxRoutes(app: FastifyInstance, manager: SandboxManager) {
   // List all sandboxes
-  app.get("/sandboxes", async () => {
+  app.get<{ Querystring: { status?: string } }>("/sandboxes", async (request) => {
+    const status = request.query.status as "running" | "destroyed" | "all" | undefined;
     return {
-      sandboxes: manager.listSandboxes(),
+      sandboxes: manager.listSandboxes(status),
       count: manager.activeSandboxCount,
       maxCount: manager.maxSandboxCount,
     };

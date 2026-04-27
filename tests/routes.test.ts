@@ -1,15 +1,17 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import Fastify from "fastify";
 import { SandboxManager } from "../src/sandbox/manager.js";
-import { ExecutionLog } from "../src/sandbox/execution-log.js";
+import { SandboxStore } from "../src/db/store.js";
+import { createDb } from "../src/db/index.js";
 import { ProcessBackend } from "../src/sandbox/process-backend.js";
 import { sandboxRoutes } from "../src/routes/sandboxes.js";
 
 describe("API routes", () => {
   const app = Fastify();
   const backend = new ProcessBackend();
-  const log = new ExecutionLog();
-  const manager = new SandboxManager(backend, 5000, 300_000, log);
+  const db = createDb(":memory:");
+  const store = new SandboxStore(db);
+  const manager = new SandboxManager(backend, 5000, 300_000, 0, store);
 
   beforeAll(async () => {
     app.get("/health", async () => ({ status: "ok", activeSandboxes: manager.activeSandboxCount }));

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { SandboxManager, SandboxNotFoundError } from "../src/sandbox/manager.js";
-import { ExecutionLog } from "../src/sandbox/execution-log.js";
+import { SandboxStore } from "../src/db/store.js";
+import { createDb } from "../src/db/index.js";
 import type { SandboxBackend, ExecutionResult } from "../src/sandbox/types.js";
 
 function createMockBackend(): SandboxBackend {
@@ -21,13 +22,14 @@ function createMockBackend(): SandboxBackend {
 
 describe("SandboxManager", () => {
   let backend: ReturnType<typeof createMockBackend>;
-  let log: ExecutionLog;
+  let store: SandboxStore;
   let manager: SandboxManager;
 
   beforeEach(() => {
     backend = createMockBackend();
-    log = new ExecutionLog();
-    manager = new SandboxManager(backend, 5000, 1000, log);
+    const db = createDb(":memory:");
+    store = new SandboxStore(db);
+    manager = new SandboxManager(backend, 5000, 1000, 0, store);
   });
 
   describe("create", () => {
@@ -128,13 +130,15 @@ describe("SandboxManager", () => {
       expect(logs[1].code).toBe("b");
     });
 
-    it("clears logs on destroy", async () => {
+    it("preserves logs after destroy (in store)", async () => {
       const info = await manager.create();
       await manager.execute(info.sandboxId, "code");
       await manager.destroy(info.sandboxId);
 
-      // After destroy, logs should be cleared
-      expect(log.get(info.sandboxId)).toEqual([]);
+      // After destroy, logs are still in the store
+      const logs = store.getLogs(info.sandboxId);
+      expect(logs).toHaveLength(1);
+      expect(logs[0].code).toBe("code");
     });
 
     it("throws SandboxNotFoundError for getLogs on unknown id", () => {

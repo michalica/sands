@@ -19,4 +19,6 @@ export const config = {
   jailerGid: parseInt(process.env.JAILER_GID ?? "1000", 10),
   cpuQuotaPercent: parseInt(process.env.CPU_QUOTA_PERCENT ?? "25", 10),
   chrootBaseDir: process.env.CHROOT_BASE_DIR ?? "/srv/jailer",
+  // Database
+  databasePath: process.env.DATABASE_PATH ?? "data/sandboxjs.db",
 } as const;

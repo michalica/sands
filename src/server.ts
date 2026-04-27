@@ -1,9 +1,13 @@
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import { config } from "./config.js";
 import { SandboxManager } from "./sandbox/manager.js";
 import { createBackend } from "./sandbox/backend-factory.js";
+import { createDb } from "./db/index.js";
+import { SandboxStore } from "./db/store.js";
 import { sandboxRoutes } from "./routes/sandboxes.js";
 import { metricsRoutes } from "./routes/metrics.js";
 import { eventsRoutes } from "./routes/events.js";
@@ -12,6 +16,11 @@ const app = Fastify({ logger: true });
 
 await app.register(cors, { origin: true });
 await app.register(websocket);
+
+// Initialize database
+mkdirSync(dirname(config.databasePath), { recursive: true });
+const db = createDb(config.databasePath);
+const store = new SandboxStore(db);
 
 const backend = createBackend({
   type: config.backendType,
@@ -29,7 +38,7 @@ const backend = createBackend({
     chrootBaseDir: config.chrootBaseDir,
   },
 });
-const manager = new SandboxManager(backend, config.defaultTimeoutMs, config.sandboxTtlMs, undefined, config.maxSandboxes);
+const manager = new SandboxManager(backend, config.defaultTimeoutMs, config.sandboxTtlMs, config.maxSandboxes, store);
 
 // Health check
 app.get("/health", async () => ({ status: "ok", activeSandboxes: manager.activeSandboxCount }));
