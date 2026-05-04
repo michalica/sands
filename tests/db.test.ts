@@ -58,11 +58,11 @@ describe("SandboxStore", () => {
       store.createSandbox({ sandboxId: "s2", createdAt: 2000, lastUsedAt: 2000 });
       store.markDestroyed("s1", 3000);
 
-      const running = store.listSandboxes("running");
+      const running = store.listSandboxes({ status: "running" });
       expect(running).toHaveLength(1);
       expect(running[0].sandboxId).toBe("s2");
 
-      const destroyed = store.listSandboxes("destroyed");
+      const destroyed = store.listSandboxes({ status: "destroyed" });
       expect(destroyed).toHaveLength(1);
       expect(destroyed[0].sandboxId).toBe("s1");
     });

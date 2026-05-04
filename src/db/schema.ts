@@ -2,6 +2,7 @@ import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 
 export const sandboxes = sqliteTable("sandboxes", {
   sandboxId: text("sandbox_id").primaryKey(),
+  userId: text("user_id"),
   createdAt: integer("created_at").notNull(),
   lastUsedAt: integer("last_used_at").notNull(),
   status: text("status", { enum: ["running", "destroyed"] }).notNull().default("running"),

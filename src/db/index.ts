@@ -16,12 +16,19 @@ export function createDb(path: string): Db {
   db.run(sql`
     CREATE TABLE IF NOT EXISTS sandboxes (
       sandbox_id TEXT PRIMARY KEY,
+      user_id TEXT,
       created_at INTEGER NOT NULL,
       last_used_at INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'running',
       destroyed_at INTEGER
     )
   `);
+
+  // Additive migration: pre-existing databases may not have user_id yet.
+  const cols = sqlite.prepare("PRAGMA table_info(sandboxes)").all() as { name: string }[];
+  if (!cols.some((c) => c.name === "user_id")) {
+    db.run(sql`ALTER TABLE sandboxes ADD COLUMN user_id TEXT`);
+  }
 
   db.run(sql`
     CREATE TABLE IF NOT EXISTS execution_logs (

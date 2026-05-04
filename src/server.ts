@@ -11,10 +11,12 @@ import { SandboxStore } from "./db/store.js";
 import { sandboxRoutes } from "./routes/sandboxes.js";
 import { metricsRoutes } from "./routes/metrics.js";
 import { eventsRoutes } from "./routes/events.js";
+import { registerApiKeyAuth } from "./auth-hook.js";
 
 const app = Fastify({ logger: true });
 
-await app.register(cors, { origin: true });
+const dashboardOrigin = process.env.DASHBOARD_ORIGIN ?? "http://localhost:3001";
+await app.register(cors, { origin: [dashboardOrigin], credentials: true });
 await app.register(websocket);
 
 // Initialize database
@@ -40,8 +42,11 @@ const backend = createBackend({
 });
 const manager = new SandboxManager(backend, config.defaultTimeoutMs, config.sandboxTtlMs, config.maxSandboxes, store);
 
-// Health check
+// Health check (unauthenticated)
 app.get("/health", async () => ({ status: "ok", activeSandboxes: manager.activeSandboxCount }));
+
+// Require an API key for the customer-facing API surface
+registerApiKeyAuth(app, ["/sandboxes", "/metrics"]);
 
 // Register routes
 await sandboxRoutes(app, manager);

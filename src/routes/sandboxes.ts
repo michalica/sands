@@ -14,8 +14,9 @@ export async function sandboxRoutes(app: FastifyInstance, manager: SandboxManage
   // List all sandboxes
   app.get<{ Querystring: { status?: string } }>("/sandboxes", async (request) => {
     const status = request.query.status as "running" | "destroyed" | "all" | undefined;
+    const userId = request.userId ?? null;
     return {
-      sandboxes: manager.listSandboxes(status),
+      sandboxes: manager.listSandboxes(status, userId),
       count: manager.activeSandboxCount,
       maxCount: manager.maxSandboxCount,
     };
@@ -25,7 +26,7 @@ export async function sandboxRoutes(app: FastifyInstance, manager: SandboxManage
   app.get<{ Params: SandboxParams }>("/sandboxes/:id", async (request, reply) => {
     const { id } = request.params;
     try {
-      return manager.getSandbox(id);
+      return manager.getSandbox(id, request.userId ?? null);
     } catch (err) {
       if (err instanceof SandboxNotFoundError) {
         reply.code(404);
@@ -36,9 +37,9 @@ export async function sandboxRoutes(app: FastifyInstance, manager: SandboxManage
   });
 
   // Create sandbox
-  app.post("/sandboxes", async (_request, reply) => {
+  app.post("/sandboxes", async (request, reply) => {
     try {
-      const info = await manager.create();
+      const info = await manager.create(request.userId ?? null);
       reply.code(201);
       return { sandboxId: info.sandboxId };
     } catch (err) {
@@ -70,7 +71,7 @@ export async function sandboxRoutes(app: FastifyInstance, manager: SandboxManage
       const { code, timeoutMs } = request.body;
 
       try {
-        const result = await manager.execute(id, code, timeoutMs);
+        const result = await manager.execute(id, code, timeoutMs, request.userId ?? null);
         return result;
       } catch (err) {
         if (err instanceof SandboxNotFoundError) {
@@ -87,7 +88,7 @@ export async function sandboxRoutes(app: FastifyInstance, manager: SandboxManage
     const { id } = request.params;
 
     try {
-      return manager.getLogs(id);
+      return manager.getLogs(id, request.userId ?? null);
     } catch (err) {
       if (err instanceof SandboxNotFoundError) {
         reply.code(404);
@@ -102,7 +103,7 @@ export async function sandboxRoutes(app: FastifyInstance, manager: SandboxManage
     const { id } = request.params;
 
     try {
-      await manager.destroy(id);
+      await manager.destroy(id, request.userId ?? null);
       reply.code(204);
       return;
     } catch (err) {

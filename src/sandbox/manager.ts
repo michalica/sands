@@ -3,9 +3,13 @@ import type { SandboxBackend, SandboxInfo, ExecutionResult } from "./types.js";
 import { broadcastEvent } from "../routes/events.js";
 import type { SandboxStore } from "../db/store.js";
 
+interface RunningSandbox extends SandboxInfo {
+  userId: string | null;
+}
+
 export class SandboxManager {
   /** In-memory map of running sandboxes (needed for backend.execute) */
-  private running = new Map<string, SandboxInfo>();
+  private running = new Map<string, RunningSandbox>();
   private ttlTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
@@ -27,7 +31,7 @@ export class SandboxManager {
     }
   }
 
-  async create(): Promise<SandboxInfo> {
+  async create(userId: string | null = null): Promise<SandboxInfo> {
     if (this.maxSandboxes > 0 && this.running.size >= this.maxSandboxes) {
       throw new SandboxLimitError(this.maxSandboxes);
     }
@@ -35,17 +39,23 @@ export class SandboxManager {
     const now = Date.now();
     const info: SandboxInfo = { sandboxId, createdAt: now, lastUsedAt: now };
     await this.backend.create(sandboxId);
-    this.running.set(sandboxId, info);
-    this.store?.createSandbox(info);
-    broadcastEvent({ type: "sandbox:created", sandboxId, createdAt: now });
+    this.running.set(sandboxId, { ...info, userId });
+    this.store?.createSandbox({ ...info, userId });
+    broadcastEvent(userId, { type: "sandbox:created", sandboxId, createdAt: now });
     return info;
   }
 
-  async execute(sandboxId: string, code: string, timeoutMs?: number): Promise<ExecutionResult> {
+  private assertOwner(sandboxId: string, userId: string | null): RunningSandbox {
     const info = this.running.get(sandboxId);
-    if (!info) {
+    if (!info) throw new SandboxNotFoundError(sandboxId);
+    if (userId !== null && info.userId !== null && info.userId !== userId) {
       throw new SandboxNotFoundError(sandboxId);
     }
+    return info;
+  }
+
+  async execute(sandboxId: string, code: string, timeoutMs?: number, userId: string | null = null): Promise<ExecutionResult> {
+    const info = this.assertOwner(sandboxId, userId);
     const now = Date.now();
     info.lastUsedAt = now;
     this.store?.updateLastUsed(sandboxId, now);
@@ -55,32 +65,31 @@ export class SandboxManager {
     const executionId = uuidv4();
     const timestamp = Date.now();
     this.store?.appendLog(sandboxId, { executionId, timestamp, code, result });
-    broadcastEvent({ type: "execution:completed", sandboxId, executionId, code, result });
+    broadcastEvent(info.userId, { type: "execution:completed", sandboxId, executionId, code, result });
     return result;
   }
 
-  getLogs(sandboxId: string) {
-    // Read from store (works for destroyed sandboxes too)
+  getLogs(sandboxId: string, userId: string | null = null) {
     if (this.store) {
       const sandbox = this.store.getSandbox(sandboxId);
       if (!sandbox) throw new SandboxNotFoundError(sandboxId);
+      if (userId !== null && sandbox.userId !== null && sandbox.userId !== userId) {
+        throw new SandboxNotFoundError(sandboxId);
+      }
       return this.store.getLogs(sandboxId);
     }
-    // Fallback: in-memory only (running sandboxes)
     if (!this.running.has(sandboxId)) {
       throw new SandboxNotFoundError(sandboxId);
     }
     return [];
   }
 
-  async destroy(sandboxId: string): Promise<void> {
-    if (!this.running.has(sandboxId)) {
-      throw new SandboxNotFoundError(sandboxId);
-    }
+  async destroy(sandboxId: string, userId: string | null = null): Promise<void> {
+    const info = this.assertOwner(sandboxId, userId);
     await this.backend.destroy(sandboxId);
     this.running.delete(sandboxId);
     this.store?.markDestroyed(sandboxId, Date.now());
-    broadcastEvent({ type: "sandbox:destroyed", sandboxId });
+    broadcastEvent(info.userId, { type: "sandbox:destroyed", sandboxId });
   }
 
   get activeSandboxCount(): number {
@@ -91,28 +100,36 @@ export class SandboxManager {
     return this.maxSandboxes;
   }
 
-  listSandboxes(status?: "running" | "destroyed" | "all") {
+  listSandboxes(status?: "running" | "destroyed" | "all", userId: string | null = null) {
     if (this.store) {
       const filter = status === "all" ? undefined : (status ?? "running");
-      const sandboxes = filter ? this.store.listSandboxes(filter) : this.store.listSandboxes();
+      const sandboxes = this.store.listSandboxes({
+        ...(filter && { status: filter }),
+        ...(userId !== null && { userId }),
+      });
       return sandboxes.map((s) => ({
         ...s,
         executionCount: this.store!.getExecutionCount(s.sandboxId),
       }));
     }
     // Fallback: in-memory only
-    return Array.from(this.running.values()).map((info) => ({
-      ...info,
-      status: "running" as const,
-      destroyedAt: null,
-      executionCount: 0,
-    }));
+    return Array.from(this.running.values())
+      .filter((info) => userId === null || info.userId === null || info.userId === userId)
+      .map((info) => ({
+        ...info,
+        status: "running" as const,
+        destroyedAt: null,
+        executionCount: 0,
+      }));
   }
 
-  getSandbox(sandboxId: string) {
+  getSandbox(sandboxId: string, userId: string | null = null) {
     if (this.store) {
       const sandbox = this.store.getSandbox(sandboxId);
       if (!sandbox) throw new SandboxNotFoundError(sandboxId);
+      if (userId !== null && sandbox.userId !== null && sandbox.userId !== userId) {
+        throw new SandboxNotFoundError(sandboxId);
+      }
       const logs = this.store.getLogs(sandboxId);
       return {
         ...sandbox,
@@ -120,9 +137,11 @@ export class SandboxManager {
         lastExecution: logs.length > 0 ? logs[logs.length - 1] : null,
       };
     }
-    // Fallback
     const info = this.running.get(sandboxId);
     if (!info) throw new SandboxNotFoundError(sandboxId);
+    if (userId !== null && info.userId !== null && info.userId !== userId) {
+      throw new SandboxNotFoundError(sandboxId);
+    }
     return { ...info, status: "running" as const, destroyedAt: null, executionCount: 0, lastExecution: null };
   }
 

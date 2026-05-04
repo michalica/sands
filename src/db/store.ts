@@ -5,6 +5,7 @@ import type { ExecutionResult } from "../sandbox/types.js";
 
 export interface SandboxRecord {
   sandboxId: string;
+  userId: string | null;
   createdAt: number;
   lastUsedAt: number;
   status: "running" | "destroyed";
@@ -22,9 +23,10 @@ export interface LogRecord {
 export class SandboxStore {
   constructor(private db: Db) {}
 
-  createSandbox(info: { sandboxId: string; createdAt: number; lastUsedAt: number }): void {
+  createSandbox(info: { sandboxId: string; userId?: string | null; createdAt: number; lastUsedAt: number }): void {
     this.db.insert(sandboxes).values({
       sandboxId: info.sandboxId,
+      userId: info.userId ?? null,
       createdAt: info.createdAt,
       lastUsedAt: info.lastUsedAt,
       status: "running",
@@ -51,13 +53,15 @@ export class SandboxStore {
       .run();
   }
 
-  listSandboxes(status?: "running" | "destroyed"): SandboxRecord[] {
-    if (status) {
-      return this.db.select().from(sandboxes)
-        .where(eq(sandboxes.status, status))
-        .all() as SandboxRecord[];
-    }
-    return this.db.select().from(sandboxes).all() as SandboxRecord[];
+  listSandboxes(opts?: { status?: "running" | "destroyed"; userId?: string }): SandboxRecord[] {
+    const conditions = [];
+    if (opts?.status) conditions.push(eq(sandboxes.status, opts.status));
+    if (opts?.userId) conditions.push(eq(sandboxes.userId, opts.userId));
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+    const query = where
+      ? this.db.select().from(sandboxes).where(where)
+      : this.db.select().from(sandboxes);
+    return query.all() as SandboxRecord[];
   }
 
   getExpired(ttlMs: number, now: number): SandboxRecord[] {
