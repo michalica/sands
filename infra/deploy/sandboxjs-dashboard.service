@@ -1,0 +1,17 @@
+[Unit]
+Description=SandboxJS Dashboard (Next.js)
+After=network.target sandboxjs-api.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/sandboxjs/app/dashboard
+ExecStart=/usr/bin/npm run start
+EnvironmentFile=/etc/sandboxjs.env
+Environment=NODE_ENV=production
+Environment=DATABASE_PATH=/opt/sandboxjs/data/sandboxjs.db
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

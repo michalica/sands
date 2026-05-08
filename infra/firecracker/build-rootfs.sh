@@ -69,13 +69,15 @@ else
   cp "$SHELL_BIN" "$ROOTDIR/bin/sh"
 fi
 
-# Copy shared libraries for shell
-ldd "$SHELL_BIN" 2>/dev/null | grep -oP '/\S+' | while read lib; do
-  if [ -f "$lib" ]; then
-    mkdir -p "$ROOTDIR$(dirname "$lib")"
-    cp -n "$lib" "$ROOTDIR${lib}" 2>/dev/null || true
-  fi
-done
+# Copy shared libraries for shell (skip silently if statically linked, e.g. busybox-static)
+if ldd "$SHELL_BIN" &>/dev/null; then
+  ldd "$SHELL_BIN" 2>/dev/null | grep -oP '/\S+' | while read lib; do
+    if [ -f "$lib" ]; then
+      mkdir -p "$ROOTDIR$(dirname "$lib")"
+      cp -n "$lib" "$ROOTDIR${lib}" 2>/dev/null || true
+    fi
+  done
+fi
 
 # 5. Copy guest agent
 echo "[..] Installing guest agent..."

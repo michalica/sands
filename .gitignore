@@ -6,3 +6,9 @@ data/
 *.db-wal
 .env
 .env.local
+
+# Terraform
+**/terraform.tfvars
+*.tfstate
+*.tfstate.backup
+**/.terraform/
