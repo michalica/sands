@@ -38,12 +38,14 @@ echo "[OK] VM bootstrapped"
 
 # 4. Sync project
 echo "[..] Syncing repo to ${SSH_TARGET}:${REMOTE_DIR}..."
-rsync -az --delete \
+rsync -az --delete --delete-excluded \
   --exclude node_modules \
   --exclude .git \
   --exclude tests \
   --exclude dashboard/node_modules \
   --exclude dashboard/.next \
+  --exclude '**/.env.local' \
+  --exclude '**/.env' \
   --exclude mcp-server/node_modules \
   --exclude data \
   "$PROJECT_DIR/" "${SSH_TARGET}:${REMOTE_DIR}/"
@@ -65,6 +67,7 @@ ssh "$SSH_TARGET" "cat > $REMOTE_DIR/dashboard/.env.production <<EOF
 NEXT_PUBLIC_API_URL=http://${PUBLIC_IP}:3000
 NEXT_PUBLIC_BASE_URL=http://${PUBLIC_IP}:3001
 BETTER_AUTH_URL=http://${PUBLIC_IP}:3001
+DATABASE_PATH=/opt/sandboxjs/data/sandboxjs.db
 EOF"
 ssh "$SSH_TARGET" "cd $REMOTE_DIR/dashboard && npm ci && npm run build"
 
