@@ -42,6 +42,7 @@ describe("SandboxManager", () => {
       expect(backend.create).toHaveBeenCalledWith(
         info.sandboxId,
         expect.objectContaining({ id: "node-22" }),
+        { enabled: false, allowed: [], disallowed: [] },
       );
       expect(manager.activeSandboxCount).toBe(1);
       expect(info.templateId).toBe("node-22");
@@ -70,6 +71,22 @@ describe("SandboxManager", () => {
       const sandbox = manager.getSandbox(info.sandboxId);
 
       expect(sandbox.networkPolicy).toEqual(networkPolicy);
+    });
+
+    it("passes network policy to the backend on create", async () => {
+      const networkPolicy: SandboxNetworkPolicy = {
+        enabled: true,
+        allowed: ["api.openai.com"],
+        disallowed: [],
+      };
+
+      const info = await manager.create(null, "node-22", networkPolicy);
+
+      expect(backend.create).toHaveBeenCalledWith(
+        info.sandboxId,
+        expect.objectContaining({ id: "node-22" }),
+        networkPolicy,
+      );
     });
   });
 

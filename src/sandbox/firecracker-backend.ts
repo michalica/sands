@@ -2,7 +2,7 @@ import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { copyFile, link, mkdir, access, rm } from "node:fs/promises";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { join, basename } from "node:path";
-import type { SandboxBackend, ExecutionResult, SandboxTemplate } from "./types.js";
+import type { SandboxBackend, ExecutionResult, SandboxNetworkPolicy, SandboxTemplate } from "./types.js";
 import { FirecrackerApi } from "./firecracker-api.js";
 
 const REQUIRES_LINUX = "FirecrackerBackend requires Linux with KVM enabled";
@@ -40,6 +40,9 @@ interface VmState {
   api: FirecrackerApi;
   serialBuffer: string;
   ready: boolean;
+  networkEnabled: boolean;
+  appliedNetworkCommands: string[];
+  tapDeviceName: string | null;
   pendingResolve: ((result: ExecutionResult) => void) | null;
   pendingReject: ((err: Error) => void) | null;
 }
@@ -140,11 +143,72 @@ export class FirecrackerBackend implements SandboxBackend {
     };
   }
 
+  buildTapSetupCommand(sandboxId: string): string {
+    const tapName = this.getTapDeviceName(sandboxId);
+    const pair = this.networkPairForSandbox(sandboxId);
+    return `${process.cwd()}/infra/firecracker/setup-tap-device.sh ${tapName} ${pair.hostCidr} ${pair.guestIp}`;
+  }
+
+  shouldEnableNetworking(networkPolicy?: SandboxNetworkPolicy): boolean {
+    return networkPolicy?.enabled === true;
+  }
+
+  buildNetworkPolicyCommands(sandboxId: string, networkPolicy: SandboxNetworkPolicy): string[] {
+    if (!this.shouldEnableNetworking(networkPolicy)) {
+      return [];
+    }
+
+    const tapName = this.getTapDeviceName(sandboxId);
+    const commands = [
+      `iptables -A FORWARD -i ${tapName} -d 10.0.0.0/8 -j REJECT`,
+      `iptables -A FORWARD -i ${tapName} -d 172.16.0.0/12 -j REJECT`,
+      `iptables -A FORWARD -i ${tapName} -d 192.168.0.0/16 -j REJECT`,
+      `iptables -A FORWARD -i ${tapName} -d 127.0.0.0/8 -j REJECT`,
+      `iptables -A FORWARD -i ${tapName} -d 169.254.0.0/16 -j REJECT`,
+    ];
+
+    if (networkPolicy.allowed.length > 0) {
+      for (const host of networkPolicy.allowed) {
+        commands.push(`# allow ${host} on ${tapName}`);
+      }
+      commands.push(`iptables -A FORWARD -i ${tapName} -j REJECT`);
+    }
+
+    for (const host of networkPolicy.disallowed) {
+      commands.push(`# deny ${host} on ${tapName}`);
+    }
+
+    return commands;
+  }
+
+  buildNetworkCleanupCommands(appliedNetworkCommands: string[], tapDeviceName: string | null): string[] {
+    const cleanup = appliedNetworkCommands
+      .filter((command) => command.startsWith("iptables "))
+      .map((command) => command.replace("iptables -A", "iptables -D"));
+    if (tapDeviceName) {
+      cleanup.push(`ip link delete ${tapDeviceName}`);
+    }
+    return cleanup;
+  }
+
+  private networkPairForSandbox(sandboxId: string): { hostCidr: string; guestIp: string } {
+    let hash = 0;
+    for (let i = 0; i < sandboxId.length; i += 1) {
+      hash = (hash + sandboxId.charCodeAt(i) * (i + 1)) % 4096;
+    }
+    const thirdOctet = Math.floor(hash / 64);
+    const fourthOctetBase = (hash % 64) * 4;
+    return {
+      hostCidr: `172.20.${thirdOctet}.${fourthOctetBase + 1}/30`,
+      guestIp: `172.20.${thirdOctet}.${fourthOctetBase + 2}`,
+    };
+  }
+
   exists(sandboxId: string): boolean {
     return this.vms.has(sandboxId);
   }
 
-  async create(sandboxId: string, template?: SandboxTemplate): Promise<void> {
+  async create(sandboxId: string, template?: SandboxTemplate, networkPolicy?: SandboxNetworkPolicy): Promise<void> {
     this.assertLinux();
 
     const jailId = this.sanitizeId(sandboxId);
@@ -220,6 +284,19 @@ export class FirecrackerBackend implements SandboxBackend {
       is_read_only: false,
     });
 
+    let appliedNetworkCommands: string[] = [];
+    const networkEnabled = this.shouldEnableNetworking(networkPolicy);
+    const tapDeviceName = networkEnabled ? this.getTapDeviceName(sandboxId) : null;
+    if (networkEnabled) {
+      this.runHostCommand(this.buildTapSetupCommand(sandboxId));
+      appliedNetworkCommands = this.buildNetworkPolicyCommands(sandboxId, networkPolicy ?? { enabled: false, allowed: [], disallowed: [] });
+      for (const command of appliedNetworkCommands) {
+        if (!command.startsWith("iptables ")) continue;
+        this.runHostCommand(command);
+      }
+      await api.put("/network-interfaces/eth0", this.buildNetworkInterfaceConfig(sandboxId));
+    }
+
     // Start the VM
     await api.put("/actions", { action_type: "InstanceStart" });
 
@@ -233,6 +310,9 @@ export class FirecrackerBackend implements SandboxBackend {
       api,
       serialBuffer: "",
       ready: false,
+      networkEnabled,
+      appliedNetworkCommands,
+      tapDeviceName,
       pendingResolve: null,
       pendingReject: null,
     };
@@ -321,12 +401,29 @@ export class FirecrackerBackend implements SandboxBackend {
       vm.proc.kill("SIGKILL");
     }
 
+    if (vm.networkEnabled) {
+      const cleanupCommands = this.buildNetworkCleanupCommands(vm.appliedNetworkCommands, vm.tapDeviceName);
+      for (const command of cleanupCommands) {
+        this.runHostCommand(command, true);
+      }
+    }
+
     // Remove entire chroot directory
     const execName = basename(this.firecrackerBin);
     const jailDir = join(this.chrootBaseDir, execName, vm.jailId);
     await rm(jailDir, { recursive: true, force: true });
 
     this.vms.delete(sandboxId);
+  }
+
+  private runHostCommand(command: string, ignoreFailure = false): void {
+    try {
+      execSync(command, { stdio: "pipe" });
+    } catch (error) {
+      if (!ignoreFailure) {
+        throw error;
+      }
+    }
   }
 
   private handleSerialData(sandboxId: string, data: string): void {
