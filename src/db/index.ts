@@ -19,6 +19,7 @@ export function createDb(path: string): Db {
       sandbox_id TEXT PRIMARY KEY,
       user_id TEXT,
       template_id TEXT NOT NULL DEFAULT 'node-22',
+      network_policy TEXT NOT NULL DEFAULT '{"enabled":false,"allowed":[],"disallowed":[]}',
       created_at INTEGER NOT NULL,
       last_used_at INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'running',
@@ -33,6 +34,9 @@ export function createDb(path: string): Db {
   }
   if (!cols.some((c) => c.name === "template_id")) {
     db.run(sql`ALTER TABLE sandboxes ADD COLUMN template_id TEXT NOT NULL DEFAULT 'node-22'`);
+  }
+  if (!cols.some((c) => c.name === "network_policy")) {
+    db.run(sql`ALTER TABLE sandboxes ADD COLUMN network_policy TEXT NOT NULL DEFAULT '{"enabled":false,"allowed":[],"disallowed":[]}'`);
   }
 
   db.run(sql`

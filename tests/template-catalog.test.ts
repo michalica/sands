@@ -35,7 +35,9 @@ describe("template catalog", () => {
       expect(template.buildMeta).toEqual(
         expect.objectContaining({
           seeded: true,
-          specPath: expect.stringContaining(`/infra/firecracker/templates/${template.id}.json`),
+          baseRootfsPath: "/opt/sandboxjs/base/rootfs.ext4",
+          setupScriptPath: expect.stringContaining(`/infra/firecracker/templates/${template.id}/setup.sh`),
+          definitionType: "setup-script",
         }),
       );
     }

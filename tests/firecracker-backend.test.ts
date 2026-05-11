@@ -118,5 +118,34 @@ describe("FirecrackerBackend", () => {
       // Firecracker args after --
       expect(args).toContain("--");
     });
+
+    it("builds deterministic tap device names", () => {
+      const backend = new FirecrackerBackend({ maxMemoryMb: 256 });
+      expect(backend.getTapDeviceName("sandbox-123")).toBe("tap-sandbox-123");
+      expect(backend.getTapDeviceName("abc_123.def")).toBe("tap-abc123def");
+    });
+
+    it("builds Firecracker network interface config", () => {
+      const backend = new FirecrackerBackend({ maxMemoryMb: 256 });
+      const nic = backend.buildNetworkInterfaceConfig("sandbox-123");
+
+      expect(nic).toEqual(
+        expect.objectContaining({
+          iface_id: "eth0",
+          host_dev_name: "tap-sandbox-123",
+          guest_mac: expect.stringMatching(/^02:FC:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}$/),
+        }),
+      );
+    });
+
+    it("builds a tap setup command with host and guest addressing", () => {
+      const backend = new FirecrackerBackend({ maxMemoryMb: 256 });
+      const command = backend.buildTapSetupCommand("sandbox-123");
+
+      expect(command).toContain("setup-tap-device.sh");
+      expect(command).toContain("tap-sandbox-123");
+      expect(command).toContain("172.20.");
+      expect(command).toContain("/30");
+    });
   });
 });

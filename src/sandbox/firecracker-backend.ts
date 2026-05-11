@@ -24,6 +24,12 @@ export interface FirecrackerConfig {
   chrootBaseDir?: string;
 }
 
+interface NetworkInterfaceConfig {
+  iface_id: string;
+  host_dev_name: string;
+  guest_mac: string;
+}
+
 interface VmState {
   proc: ChildProcess;
   jailId: string;
@@ -115,6 +121,23 @@ export class FirecrackerBackend implements SandboxBackend {
     // Separator for firecracker args
     args.push("--", "--api-sock", API_SOCKET_NAME);
     return args;
+  }
+
+  getTapDeviceName(sandboxId: string): string {
+    return `tap-${this.sanitizeId(sandboxId)}`.slice(0, 15);
+  }
+
+  buildNetworkInterfaceConfig(sandboxId: string): NetworkInterfaceConfig {
+    const bytes = [0, 0, 0, 0];
+    for (let i = 0; i < sandboxId.length; i += 1) {
+      bytes[i % bytes.length] = (bytes[i % bytes.length] + sandboxId.charCodeAt(i)) % 256;
+    }
+    const pairs = bytes.map((byte) => byte.toString(16).toUpperCase().padStart(2, "0"));
+    return {
+      iface_id: "eth0",
+      host_dev_name: this.getTapDeviceName(sandboxId),
+      guest_mac: `02:FC:${pairs.join(":")}`,
+    };
   }
 
   exists(sandboxId: string): boolean {

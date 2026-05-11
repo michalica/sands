@@ -8,6 +8,11 @@ interface ExecuteBody {
 
 interface CreateSandboxBody {
   template?: string;
+  network?: {
+    enabled?: boolean;
+    allowed?: string[];
+    disallowed?: string[];
+  };
 }
 
 interface SandboxParams {
@@ -52,7 +57,15 @@ export async function sandboxRoutes(app: FastifyInstance, manager: SandboxManage
   app.post("/sandboxes", async (request, reply) => {
     try {
       const body = (request.body as CreateSandboxBody | undefined) ?? {};
-      const info = await manager.create(request.userId ?? null, body.template ?? "node-22");
+      const info = await manager.create(
+        request.userId ?? null,
+        body.template ?? "node-22",
+        {
+          enabled: body.network?.enabled ?? false,
+          allowed: body.network?.allowed ?? [],
+          disallowed: body.network?.disallowed ?? [],
+        },
+      );
       request.log.info(
         logContext(request, {
           sandbox_id: info.sandboxId,

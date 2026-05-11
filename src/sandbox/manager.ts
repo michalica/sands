@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import type { SandboxBackend, SandboxInfo, ExecutionResult, SandboxTemplate } from "./types.js";
+import type { SandboxBackend, SandboxInfo, ExecutionResult, SandboxNetworkPolicy, SandboxTemplate } from "./types.js";
 import { broadcastEvent } from "../routes/events.js";
 import type { SandboxStore } from "../db/store.js";
 import { SandboxMetrics } from "../metrics/prometheus.js";
@@ -7,7 +7,14 @@ import { SandboxMetrics } from "../metrics/prometheus.js";
 interface RunningSandbox extends SandboxInfo {
   userId: string | null;
   templateId: string;
+  networkPolicy: SandboxNetworkPolicy;
 }
+
+const DEFAULT_NETWORK_POLICY: SandboxNetworkPolicy = {
+  enabled: false,
+  allowed: [],
+  disallowed: [],
+};
 
 export class SandboxManager {
   /** In-memory map of running sandboxes (needed for backend.execute) */
@@ -34,7 +41,11 @@ export class SandboxManager {
     }
   }
 
-  async create(userId: string | null = null, templateId: string = "node-22"): Promise<SandboxInfo & { templateId: string }> {
+  async create(
+    userId: string | null = null,
+    templateId: string = "node-22",
+    networkPolicy: SandboxNetworkPolicy = DEFAULT_NETWORK_POLICY,
+  ): Promise<SandboxInfo & { templateId: string; networkPolicy: SandboxNetworkPolicy }> {
     if (this.maxSandboxes > 0 && this.running.size >= this.maxSandboxes) {
       throw new SandboxLimitError(this.maxSandboxes);
     }
@@ -44,7 +55,7 @@ export class SandboxManager {
     }
     const sandboxId = uuidv4();
     const now = Date.now();
-    const info = { sandboxId, templateId, createdAt: now, lastUsedAt: now };
+    const info = { sandboxId, templateId, networkPolicy, createdAt: now, lastUsedAt: now };
     const templateLoadStartedAt = performance.now();
     const templateLoadMs = Math.round(performance.now() - templateLoadStartedAt);
     const coldStartStartedAt = performance.now();

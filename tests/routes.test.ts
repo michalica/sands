@@ -56,6 +56,31 @@ describe("API routes", () => {
       await manager.destroy(res.json().sandboxId);
     });
 
+    it("accepts per-sandbox network policy", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/sandboxes",
+        payload: {
+          template: "node-22",
+          network: {
+            enabled: true,
+            allowed: ["api.openai.com"],
+            disallowed: ["facebook.com"],
+          },
+        },
+      });
+
+      expect(res.statusCode).toBe(201);
+      const sandbox = manager.getSandbox(res.json().sandboxId);
+      expect(sandbox.networkPolicy).toEqual({
+        enabled: true,
+        allowed: ["api.openai.com"],
+        disallowed: ["facebook.com"],
+      });
+
+      await manager.destroy(res.json().sandboxId);
+    });
+
     it("rejects unknown templates", async () => {
       const res = await app.inject({
         method: "POST",

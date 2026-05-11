@@ -4,6 +4,7 @@ export const sandboxes = sqliteTable("sandboxes", {
   sandboxId: text("sandbox_id").primaryKey(),
   userId: text("user_id"),
   templateId: text("template_id").notNull().default("node-22"),
+  networkPolicy: text("network_policy").notNull().default('{"enabled":false,"allowed":[],"disallowed":[]}'),
   createdAt: integer("created_at").notNull(),
   lastUsedAt: integer("last_used_at").notNull(),
   status: text("status", { enum: ["running", "destroyed"] }).notNull().default("running"),

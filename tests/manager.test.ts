@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { SandboxManager, SandboxNotFoundError } from "../src/sandbox/manager.js";
 import { SandboxStore } from "../src/db/store.js";
 import { createDb } from "../src/db/index.js";
-import type { SandboxBackend, ExecutionResult } from "../src/sandbox/types.js";
+import type { SandboxBackend, ExecutionResult, SandboxNetworkPolicy } from "../src/sandbox/types.js";
 
 function createMockBackend(): SandboxBackend {
   const sandboxes = new Set<string>();
@@ -57,6 +57,19 @@ describe("SandboxManager", () => {
 
     it("rejects unknown templates", async () => {
       await expect(manager.create(null, "missing-template")).rejects.toThrow("Unknown template");
+    });
+
+    it("stores network policy per sandbox instance", async () => {
+      const networkPolicy: SandboxNetworkPolicy = {
+        enabled: true,
+        allowed: ["api.openai.com"],
+        disallowed: ["facebook.com"],
+      };
+
+      const info = await manager.create(null, "node-22", networkPolicy);
+      const sandbox = manager.getSandbox(info.sandboxId);
+
+      expect(sandbox.networkPolicy).toEqual(networkPolicy);
     });
   });
 

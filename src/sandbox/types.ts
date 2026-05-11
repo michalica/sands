@@ -12,6 +12,12 @@ export interface SandboxInfo {
   lastUsedAt: number;
 }
 
+export interface SandboxNetworkPolicy {
+  enabled: boolean;
+  allowed: string[];
+  disallowed: string[];
+}
+
 export interface SandboxTemplate {
   id: string;
   name: string;

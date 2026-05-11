@@ -2,13 +2,14 @@ import type { SandboxTemplate } from "../sandbox/types.js";
 
 const SHARED_KERNEL_PATH = "/opt/sandboxjs/vmlinux";
 const TEMPLATE_BASE_DIR = "/opt/sandboxjs/templates";
+const BASE_ROOTFS_PATH = "/opt/sandboxjs/base/rootfs.ext4";
 
 function templateRootfsPath(id: string): string {
   return `${TEMPLATE_BASE_DIR}/${id}/rootfs.ext4`;
 }
 
-function templateSpecPath(id: string): string {
-  return `${process.cwd()}/infra/firecracker/templates/${id}.json`;
+function templateSetupScriptPath(id: string): string {
+  return `${process.cwd()}/infra/firecracker/templates/${id}/setup.sh`;
 }
 
 export function getSeedTemplates(): SandboxTemplate[] {
@@ -22,7 +23,9 @@ export function getSeedTemplates(): SandboxTemplate[] {
       defaultPackages: ["node"],
       buildMeta: {
         seeded: true,
-        specPath: templateSpecPath("node-22"),
+        definitionType: "setup-script",
+        baseRootfsPath: BASE_ROOTFS_PATH,
+        setupScriptPath: templateSetupScriptPath("node-22"),
       },
     },
     {
@@ -34,7 +37,9 @@ export function getSeedTemplates(): SandboxTemplate[] {
       defaultPackages: ["python3", "pip"],
       buildMeta: {
         seeded: true,
-        specPath: templateSpecPath("python-3.12"),
+        definitionType: "setup-script",
+        baseRootfsPath: BASE_ROOTFS_PATH,
+        setupScriptPath: templateSetupScriptPath("python-3.12"),
       },
     },
   ];

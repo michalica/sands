@@ -1,12 +1,13 @@
 import { eq, and, lt, sql } from "drizzle-orm";
 import { sandboxes, executionLogs, templates } from "./schema.js";
 import type { Db } from "./index.js";
-import type { ExecutionResult, SandboxTemplate } from "../sandbox/types.js";
+import type { ExecutionResult, SandboxNetworkPolicy, SandboxTemplate } from "../sandbox/types.js";
 
 export interface SandboxRecord {
   sandboxId: string;
   userId: string | null;
   templateId: string;
+  networkPolicy: SandboxNetworkPolicy;
   createdAt: number;
   lastUsedAt: number;
   status: "running" | "destroyed";
@@ -34,11 +35,19 @@ interface TemplateRow {
 export class SandboxStore {
   constructor(private db: Db) {}
 
-  createSandbox(info: { sandboxId: string; userId?: string | null; templateId: string; createdAt: number; lastUsedAt: number }): void {
+  createSandbox(info: {
+    sandboxId: string;
+    userId?: string | null;
+    templateId: string;
+    networkPolicy: SandboxNetworkPolicy;
+    createdAt: number;
+    lastUsedAt: number;
+  }): void {
     this.db.insert(sandboxes).values({
       sandboxId: info.sandboxId,
       userId: info.userId ?? null,
       templateId: info.templateId,
+      networkPolicy: JSON.stringify(info.networkPolicy),
       createdAt: info.createdAt,
       lastUsedAt: info.lastUsedAt,
       status: "running",
@@ -48,7 +57,11 @@ export class SandboxStore {
   getSandbox(sandboxId: string): SandboxRecord | null {
     const rows = this.db.select().from(sandboxes).where(eq(sandboxes.sandboxId, sandboxId)).all();
     if (rows.length === 0) return null;
-    return rows[0] as SandboxRecord;
+    const row = rows[0] as typeof rows[0] & { networkPolicy: string };
+    return {
+      ...row,
+      networkPolicy: JSON.parse(row.networkPolicy) as SandboxNetworkPolicy,
+    } as SandboxRecord;
   }
 
   updateLastUsed(sandboxId: string, timestamp: number): void {
@@ -73,7 +86,10 @@ export class SandboxStore {
     const query = where
       ? this.db.select().from(sandboxes).where(where)
       : this.db.select().from(sandboxes);
-    return query.all() as SandboxRecord[];
+    return (query.all() as Array<typeof sandboxes.$inferSelect & { networkPolicy: string }>).map((row) => ({
+      ...row,
+      networkPolicy: JSON.parse(row.networkPolicy) as SandboxNetworkPolicy,
+    })) as SandboxRecord[];
   }
 
   getExpired(ttlMs: number, now: number): SandboxRecord[] {

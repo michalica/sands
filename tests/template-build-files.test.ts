@@ -8,29 +8,51 @@ describe("template build scaffolding", () => {
     expect(existsSync(`${base}/build-template.sh`)).toBe(true);
   });
 
-  it("includes a node-22 template spec", () => {
-    const raw = readFileSync(`${base}/templates/node-22.json`, "utf-8");
-    const spec = JSON.parse(raw) as Record<string, unknown>;
+  it("includes a node-22 setup script", () => {
+    const script = readFileSync(`${base}/templates/node-22/setup.sh`, "utf-8");
 
-    expect(spec.id).toBe("node-22");
-    expect(spec.name).toBe("Node.js 22");
-    expect(spec.packages).toEqual(expect.arrayContaining(["node"]));
+    expect(script).toContain("Node.js 22");
+    expect(script).toContain("apt-get");
   });
 
-  it("includes a python-3.12 template spec", () => {
-    const raw = readFileSync(`${base}/templates/python-3.12.json`, "utf-8");
-    const spec = JSON.parse(raw) as Record<string, unknown>;
+  it("includes a python-3.12 setup script", () => {
+    const script = readFileSync(`${base}/templates/python-3.12/setup.sh`, "utf-8");
 
-    expect(spec.id).toBe("python-3.12");
-    expect(spec.name).toBe("Python 3.12");
-    expect(spec.packages).toEqual(expect.arrayContaining(["python3", "python3-pip"]));
+    expect(script).toContain("Python 3.12");
+    expect(script).toContain("apt-get");
+    expect(script).toContain("python3");
   });
 
   it("documents how to build a named template", () => {
     const script = readFileSync(`${base}/build-template.sh`, "utf-8");
 
     expect(script).toContain("Usage: ./build-template.sh <template-id>");
-    expect(script).toContain("templates/${TEMPLATE_ID}.json");
+    expect(script).toContain("templates/${TEMPLATE_ID}/setup.sh");
     expect(script).toContain("/opt/sandboxjs/templates/${TEMPLATE_ID}/rootfs.ext4");
+    expect(script).toContain("/opt/sandboxjs/base/rootfs.ext4");
+    expect(script).toContain("SETUP_SCRIPT_PATH");
+  });
+
+  it("includes a base rootfs build entrypoint", () => {
+    const script = readFileSync(`${base}/build-base-rootfs.sh`, "utf-8");
+
+    expect(script).toContain("/opt/sandboxjs/base/rootfs.ext4");
+    expect(script).toContain("guest-agent");
+  });
+
+  it("includes builder networking scaffolding", () => {
+    const script = readFileSync(`${base}/build-template.sh`, "utf-8");
+
+    expect(script).toContain("builder VM with networking");
+    expect(script).toContain("setup-tap-device.sh");
+  });
+
+  it("includes runtime networking docs", () => {
+    const doc = readFileSync(`${base}/NETWORKING.md`, "utf-8");
+
+    expect(doc).toContain("ip_forward");
+    expect(doc).toContain("iptables");
+    expect(doc).toContain("TAP");
+    expect(doc).toContain("deny private IP ranges");
   });
 });

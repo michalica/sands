@@ -13,12 +13,19 @@ describe("SandboxStore", () => {
 
   describe("sandboxes", () => {
     it("creates and retrieves a sandbox", () => {
-      store.createSandbox({ sandboxId: "s1", templateId: "node-22", createdAt: 1000, lastUsedAt: 1000 });
+      store.createSandbox({
+        sandboxId: "s1",
+        templateId: "node-22",
+        networkPolicy: { enabled: false, allowed: [], disallowed: [] },
+        createdAt: 1000,
+        lastUsedAt: 1000,
+      });
       const sandbox = store.getSandbox("s1");
 
       expect(sandbox).toBeDefined();
       expect(sandbox!.sandboxId).toBe("s1");
       expect(sandbox!.templateId).toBe("node-22");
+      expect(sandbox!.networkPolicy).toEqual({ enabled: false, allowed: [], disallowed: [] });
       expect(sandbox!.createdAt).toBe(1000);
       expect(sandbox!.status).toBe("running");
       expect(sandbox!.destroyedAt).toBeNull();
@@ -29,7 +36,7 @@ describe("SandboxStore", () => {
     });
 
     it("updates lastUsedAt", () => {
-      store.createSandbox({ sandboxId: "s1", templateId: "node-22", createdAt: 1000, lastUsedAt: 1000 });
+      store.createSandbox({ sandboxId: "s1", templateId: "node-22", networkPolicy: { enabled: false, allowed: [], disallowed: [] }, createdAt: 1000, lastUsedAt: 1000 });
       store.updateLastUsed("s1", 2000);
 
       const sandbox = store.getSandbox("s1");
@@ -37,7 +44,7 @@ describe("SandboxStore", () => {
     });
 
     it("marks sandbox as destroyed", () => {
-      store.createSandbox({ sandboxId: "s1", templateId: "node-22", createdAt: 1000, lastUsedAt: 1000 });
+      store.createSandbox({ sandboxId: "s1", templateId: "node-22", networkPolicy: { enabled: false, allowed: [], disallowed: [] }, createdAt: 1000, lastUsedAt: 1000 });
       store.markDestroyed("s1", 3000);
 
       const sandbox = store.getSandbox("s1");
@@ -46,8 +53,8 @@ describe("SandboxStore", () => {
     });
 
     it("lists all sandboxes", () => {
-      store.createSandbox({ sandboxId: "s1", templateId: "node-22", createdAt: 1000, lastUsedAt: 1000 });
-      store.createSandbox({ sandboxId: "s2", templateId: "node-22", createdAt: 2000, lastUsedAt: 2000 });
+      store.createSandbox({ sandboxId: "s1", templateId: "node-22", networkPolicy: { enabled: false, allowed: [], disallowed: [] }, createdAt: 1000, lastUsedAt: 1000 });
+      store.createSandbox({ sandboxId: "s2", templateId: "node-22", networkPolicy: { enabled: false, allowed: [], disallowed: [] }, createdAt: 2000, lastUsedAt: 2000 });
       store.markDestroyed("s1", 3000);
 
       const all = store.listSandboxes();
@@ -55,8 +62,8 @@ describe("SandboxStore", () => {
     });
 
     it("lists sandboxes by status", () => {
-      store.createSandbox({ sandboxId: "s1", templateId: "node-22", createdAt: 1000, lastUsedAt: 1000 });
-      store.createSandbox({ sandboxId: "s2", templateId: "node-22", createdAt: 2000, lastUsedAt: 2000 });
+      store.createSandbox({ sandboxId: "s1", templateId: "node-22", networkPolicy: { enabled: false, allowed: [], disallowed: [] }, createdAt: 1000, lastUsedAt: 1000 });
+      store.createSandbox({ sandboxId: "s2", templateId: "node-22", networkPolicy: { enabled: false, allowed: [], disallowed: [] }, createdAt: 2000, lastUsedAt: 2000 });
       store.markDestroyed("s1", 3000);
 
       const running = store.listSandboxes({ status: "running" });
@@ -69,8 +76,8 @@ describe("SandboxStore", () => {
     });
 
     it("finds expired sandboxes", () => {
-      store.createSandbox({ sandboxId: "s1", templateId: "node-22", createdAt: 1000, lastUsedAt: 1000 });
-      store.createSandbox({ sandboxId: "s2", templateId: "node-22", createdAt: 2000, lastUsedAt: 5000 });
+      store.createSandbox({ sandboxId: "s1", templateId: "node-22", networkPolicy: { enabled: false, allowed: [], disallowed: [] }, createdAt: 1000, lastUsedAt: 1000 });
+      store.createSandbox({ sandboxId: "s2", templateId: "node-22", networkPolicy: { enabled: false, allowed: [], disallowed: [] }, createdAt: 2000, lastUsedAt: 5000 });
 
       // TTL of 2000ms, current time 4000 → s1 expired (1000 + 2000 < 4000), s2 not
       const expired = store.getExpired(2000, 4000);
@@ -81,7 +88,7 @@ describe("SandboxStore", () => {
 
   describe("execution logs", () => {
     it("appends and retrieves logs", () => {
-      store.createSandbox({ sandboxId: "s1", templateId: "node-22", createdAt: 1000, lastUsedAt: 1000 });
+      store.createSandbox({ sandboxId: "s1", templateId: "node-22", networkPolicy: { enabled: false, allowed: [], disallowed: [] }, createdAt: 1000, lastUsedAt: 1000 });
       store.appendLog("s1", {
         executionId: "e1",
         timestamp: 1500,
@@ -98,7 +105,7 @@ describe("SandboxStore", () => {
     });
 
     it("returns multiple logs in order", () => {
-      store.createSandbox({ sandboxId: "s1", templateId: "node-22", createdAt: 1000, lastUsedAt: 1000 });
+      store.createSandbox({ sandboxId: "s1", templateId: "node-22", networkPolicy: { enabled: false, allowed: [], disallowed: [] }, createdAt: 1000, lastUsedAt: 1000 });
       store.appendLog("s1", {
         executionId: "e1", timestamp: 1000, code: "a",
         result: { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false },
@@ -115,12 +122,12 @@ describe("SandboxStore", () => {
     });
 
     it("returns empty array for sandbox with no logs", () => {
-      store.createSandbox({ sandboxId: "s1", templateId: "node-22", createdAt: 1000, lastUsedAt: 1000 });
+      store.createSandbox({ sandboxId: "s1", templateId: "node-22", networkPolicy: { enabled: false, allowed: [], disallowed: [] }, createdAt: 1000, lastUsedAt: 1000 });
       expect(store.getLogs("s1")).toEqual([]);
     });
 
     it("returns logs for destroyed sandboxes", () => {
-      store.createSandbox({ sandboxId: "s1", templateId: "node-22", createdAt: 1000, lastUsedAt: 1000 });
+      store.createSandbox({ sandboxId: "s1", templateId: "node-22", networkPolicy: { enabled: false, allowed: [], disallowed: [] }, createdAt: 1000, lastUsedAt: 1000 });
       store.appendLog("s1", {
         executionId: "e1", timestamp: 1500, code: "x",
         result: { stdout: "ok\n", stderr: "", exitCode: 0, durationMs: 5, timedOut: false },
@@ -133,7 +140,7 @@ describe("SandboxStore", () => {
     });
 
     it("counts executions per sandbox", () => {
-      store.createSandbox({ sandboxId: "s1", templateId: "node-22", createdAt: 1000, lastUsedAt: 1000 });
+      store.createSandbox({ sandboxId: "s1", templateId: "node-22", networkPolicy: { enabled: false, allowed: [], disallowed: [] }, createdAt: 1000, lastUsedAt: 1000 });
       store.appendLog("s1", {
         executionId: "e1", timestamp: 1000, code: "a",
         result: { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false },
