@@ -1,14 +1,18 @@
 import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { copyFile, link, mkdir, access, rm } from "node:fs/promises";
-import { createWriteStream, type WriteStream } from "node:fs";
+import { createConnection, type Socket } from "node:net";
 import { join, basename } from "node:path";
 import type { SandboxBackend, ExecutionResult, SandboxTemplate } from "./types.js";
 import { FirecrackerApi } from "./firecracker-api.js";
 
 const REQUIRES_LINUX = "FirecrackerBackend requires Linux with KVM enabled";
 const BOOT_ARGS = "console=ttyS0 reboot=k panic=1 pci=off quiet init=/init";
-const AGENT_READY_MARKER = "SANDBOXJS_AGENT_READY";
 const API_SOCKET_NAME = "run/firecracker.socket";
+const VSOCK_UDS_NAME = "v.sock";
+const GUEST_CID = 3;
+const AGENT_VSOCK_PORT = 5252;
+const READY_TIMEOUT_MS = 15000;
+const READY_POLL_INTERVAL_MS = 100;
 
 export interface FirecrackerConfig {
   maxMemoryMb: number;
@@ -35,19 +39,16 @@ interface VmState {
   jailId: string;
   chrootPath: string;
   apiSocketPath: string;
-  serialInputPath: string;
-  serialInput: WriteStream | null;
+  vsockUdsPath: string;
   api: FirecrackerApi;
-  serialBuffer: string;
-  ready: boolean;
-  pendingResolve: ((result: ExecutionResult) => void) | null;
-  pendingReject: ((err: Error) => void) | null;
 }
 
 /**
  * Firecracker microVM-based sandbox backend with jailer support.
  * Uses jailer for chroot, cgroups (CPU limits), privilege dropping.
- * Uses serial console (stdin/stdout) for guest-host communication.
+ * Uses virtio-vsock for guest-host communication: each call opens its own
+ * stream via the chroot UDS (`v.sock`), sends a length-prefixed JSON
+ * request, reads a length-prefixed JSON response, and closes.
  */
 export class FirecrackerBackend implements SandboxBackend {
   private vms = new Map<string, VmState>();
@@ -97,6 +98,11 @@ export class FirecrackerBackend implements SandboxBackend {
   /** Get the full host path to the API socket inside the chroot */
   getApiSocketPath(sandboxId: string): string {
     return join(this.getChrootPath(sandboxId), API_SOCKET_NAME);
+  }
+
+  /** Get the full host path to the vsock UDS inside the chroot */
+  getVsockUdsPath(sandboxId: string): string {
+    return join(this.getChrootPath(sandboxId), VSOCK_UDS_NAME);
   }
 
   /** Build the jailer command-line arguments */
@@ -150,6 +156,7 @@ export class FirecrackerBackend implements SandboxBackend {
     const jailId = this.sanitizeId(sandboxId);
     const chrootPath = this.getChrootPath(sandboxId);
     const apiSocketPath = this.getApiSocketPath(sandboxId);
+    const vsockUdsPath = this.getVsockUdsPath(sandboxId);
 
     // Jailer creates the chroot dir, but we need to pre-populate resources
     await mkdir(chrootPath, { recursive: true });
@@ -168,26 +175,15 @@ export class FirecrackerBackend implements SandboxBackend {
     }
     await copyFile(rootfsPath, chrootRootfs);
 
-    // Create a FIFO for serial input (jailer closes stdin, so we need a pipe)
-    const serialInputPath = join(chrootPath, "serial.in");
-    execSync(`mkfifo ${serialInputPath}`);
-
     // Set ownership so the jailed process (uid/gid) can access the files
     execSync(`chown -R ${this.jailerUid}:${this.jailerGid} ${chrootPath}`);
 
-    // Spawn jailer with stdin from the FIFO
-    // We use a shell wrapper to redirect the FIFO to stdin
+    // Spawn jailer. Stdin goes nowhere; stdout/stderr captured for logging.
     const args = this.buildJailerArgs(sandboxId);
-    const proc = spawn("sh", ["-c", `${this.jailerBin} ${args.map(a => `'${a}'`).join(" ")} < ${serialInputPath}`], {
+    const proc = spawn(this.jailerBin, args, {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    // Open the FIFO for writing (must happen after the reader opens it)
-    // Opening FIFO for write blocks until a reader exists, so do it after spawn
-    await new Promise((r) => setTimeout(r, 500));
-    const serialInput = createWriteStream(serialInputPath, { flags: "w" });
-
-    // Capture early exit / errors
     proc.stderr!.on("data", (chunk: Buffer) => {
       console.log(`[jailer:${jailId.slice(0, 8)}] stderr: ${chunk.toString().trim()}`);
     });
@@ -198,7 +194,7 @@ export class FirecrackerBackend implements SandboxBackend {
     });
 
     // Wait for API socket
-    await this.waitForSocket(apiSocketPath, 10000);
+    await this.waitForPath(apiSocketPath, 10000);
 
     const api = new FirecrackerApi(apiSocketPath);
 
@@ -220,6 +216,14 @@ export class FirecrackerBackend implements SandboxBackend {
       is_read_only: false,
     });
 
+    // Configure vsock. uds_path is relative to chroot; Firecracker creates
+    // <chroot>/v.sock and listens there. Each incoming host-side connection
+    // initiates with "CONNECT <port>\n" to reach the guest on that vsock port.
+    await api.put("/vsock", {
+      guest_cid: GUEST_CID,
+      uds_path: VSOCK_UDS_NAME,
+    });
+
     // Start the VM
     await api.put("/actions", { action_type: "InstanceStart" });
 
@@ -228,24 +232,14 @@ export class FirecrackerBackend implements SandboxBackend {
       jailId,
       chrootPath,
       apiSocketPath,
-      serialInputPath,
-      serialInput,
+      vsockUdsPath,
       api,
-      serialBuffer: "",
-      ready: false,
-      pendingResolve: null,
-      pendingReject: null,
     };
-
-    // Listen for serial output from the VM
-    proc.stdout!.on("data", (chunk: Buffer) => {
-      this.handleSerialData(sandboxId, chunk.toString());
-    });
 
     this.vms.set(sandboxId, state);
 
-    // Wait for the guest agent to signal it's ready
-    await this.waitForAgent(sandboxId, 15000);
+    // Wait for the guest agent to accept a vsock connection.
+    await this.waitForAgent(sandboxId, READY_TIMEOUT_MS);
   }
 
   async execute(sandboxId: string, code: string, timeoutMs: number): Promise<ExecutionResult> {
@@ -256,39 +250,16 @@ export class FirecrackerBackend implements SandboxBackend {
       throw new Error(`Sandbox not found: ${sandboxId}`);
     }
 
-    if (!vm.ready) {
-      throw new Error("Guest agent not ready");
-    }
+    const request = { type: "execute", code, timeoutMs };
+    const response = await this.callAgent(vm.vsockUdsPath, request, timeoutMs + 5000);
 
-    return new Promise<ExecutionResult>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        vm.pendingResolve = null;
-        vm.pendingReject = null;
-        reject(new Error("Agent response timeout"));
-      }, timeoutMs + 5000);
-
-      vm.pendingResolve = (result) => {
-        clearTimeout(timer);
-        vm.pendingResolve = null;
-        vm.pendingReject = null;
-        resolve(result);
-      };
-
-      vm.pendingReject = (err) => {
-        clearTimeout(timer);
-        vm.pendingResolve = null;
-        vm.pendingReject = null;
-        reject(err);
-      };
-
-      // Send code to guest agent via serial FIFO
-      const request = JSON.stringify({ type: "execute", code, timeoutMs });
-      if (vm.serialInput) {
-        vm.serialInput.write(request + "\n");
-      } else {
-        reject(new Error("Serial input not available"));
-      }
-    });
+    return {
+      stdout: typeof response.stdout === "string" ? response.stdout : "",
+      stderr: typeof response.stderr === "string" ? response.stderr : "",
+      exitCode: typeof response.exitCode === "number" ? response.exitCode : 1,
+      durationMs: typeof response.durationMs === "number" ? response.durationMs : 0,
+      timedOut: response.timedOut === true,
+    };
   }
 
   async destroy(sandboxId: string): Promise<void> {
@@ -297,16 +268,6 @@ export class FirecrackerBackend implements SandboxBackend {
     const vm = this.vms.get(sandboxId);
     if (!vm) {
       throw new Error(`Sandbox not found: ${sandboxId}`);
-    }
-
-    // Reject any pending execution
-    if (vm.pendingReject) {
-      vm.pendingReject(new Error("Sandbox destroyed"));
-    }
-
-    // Close serial input FIFO
-    if (vm.serialInput) {
-      vm.serialInput.end();
     }
 
     // Try graceful shutdown
@@ -329,59 +290,132 @@ export class FirecrackerBackend implements SandboxBackend {
     this.vms.delete(sandboxId);
   }
 
-  private handleSerialData(sandboxId: string, data: string): void {
-    const vm = this.vms.get(sandboxId);
-    if (!vm) return;
-
-    vm.serialBuffer += data;
-
-    let newlineIdx: number;
-    while ((newlineIdx = vm.serialBuffer.indexOf("\n")) !== -1) {
-      const line = vm.serialBuffer.slice(0, newlineIdx).trim();
-      vm.serialBuffer = vm.serialBuffer.slice(newlineIdx + 1);
-
-      if (line === AGENT_READY_MARKER) {
-        vm.ready = true;
-        continue;
-      }
-
-      if (vm.pendingResolve && line.startsWith("{")) {
-        try {
-          const result = JSON.parse(line);
-          if ("exitCode" in result) {
-            vm.pendingResolve({
-              stdout: result.stdout ?? "",
-              stderr: result.stderr ?? "",
-              exitCode: result.exitCode ?? 1,
-              durationMs: result.durationMs ?? 0,
-              timedOut: result.timedOut ?? false,
-            });
-          }
-        } catch {
-          // Not valid JSON, ignore
-        }
-      }
-    }
-  }
-
-  private waitForAgent(sandboxId: string, timeoutMs: number): Promise<void> {
+  /** Open a vsock connection to the agent via Firecracker's UDS and run one request/response cycle. */
+  private callAgent(udsPath: string, request: object, timeoutMs: number): Promise<Record<string, unknown>> {
     return new Promise((resolve, reject) => {
-      const start = Date.now();
-      const check = () => {
-        const vm = this.vms.get(sandboxId);
-        if (!vm) { reject(new Error("VM disappeared")); return; }
-        if (vm.ready) { resolve(); return; }
-        if (Date.now() - start > timeoutMs) {
-          reject(new Error("Timeout waiting for guest agent"));
-          return;
-        }
-        setTimeout(check, 200);
+      const sock: Socket = createConnection(udsPath);
+      let phase: "handshake" | "payload" = "handshake";
+      let buffer = Buffer.alloc(0);
+      let expected: number | null = null;
+      let settled = false;
+
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        sock.destroy();
+        reject(new Error("Agent call timeout"));
+      }, timeoutMs);
+
+      const finish = (err: Error | null, value?: Record<string, unknown>) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        sock.destroy();
+        if (err) reject(err);
+        else resolve(value!);
       };
-      check();
+
+      sock.on("error", (err) => finish(err));
+      sock.on("end", () => {
+        if (!settled) finish(new Error("Agent closed connection prematurely"));
+      });
+
+      sock.on("connect", () => {
+        // Firecracker vsock handshake: ask to be routed to the guest agent's port.
+        sock.write(`CONNECT ${AGENT_VSOCK_PORT}\n`);
+      });
+
+      sock.on("data", (chunk: Buffer) => {
+        buffer = Buffer.concat([buffer, chunk]);
+
+        if (phase === "handshake") {
+          const newlineIdx = buffer.indexOf(0x0a);
+          if (newlineIdx === -1) return;
+          const line = buffer.subarray(0, newlineIdx).toString("utf8");
+          buffer = buffer.subarray(newlineIdx + 1);
+          if (!line.startsWith("OK ")) {
+            return finish(new Error(`Firecracker vsock handshake failed: ${line}`));
+          }
+          phase = "payload";
+
+          // Now send the length-prefixed JSON request.
+          const payload = Buffer.from(JSON.stringify(request), "utf8");
+          const lenBuf = Buffer.alloc(4);
+          lenBuf.writeUInt32BE(payload.length);
+          sock.write(Buffer.concat([lenBuf, payload]));
+        }
+
+        if (phase === "payload") {
+          if (expected === null && buffer.length >= 4) {
+            expected = buffer.readUInt32BE(0);
+            buffer = buffer.subarray(4);
+          }
+          if (expected !== null && buffer.length >= expected) {
+            const json = buffer.subarray(0, expected).toString("utf8");
+            try {
+              finish(null, JSON.parse(json) as Record<string, unknown>);
+            } catch (err) {
+              finish(err as Error);
+            }
+          }
+        }
+      });
     });
   }
 
-  private async waitForSocket(path: string, timeoutMs: number): Promise<void> {
+  /** Poll-connect to the guest agent until it answers, or time out. */
+  private async waitForAgent(sandboxId: string, timeoutMs: number): Promise<void> {
+    const vm = this.vms.get(sandboxId);
+    if (!vm) throw new Error("VM disappeared before readiness check");
+
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try {
+        await this.probeAgent(vm.vsockUdsPath);
+        return;
+      } catch {
+        // not ready yet
+      }
+      await new Promise((r) => setTimeout(r, READY_POLL_INTERVAL_MS));
+    }
+    throw new Error("Timeout waiting for guest agent");
+  }
+
+  /** A single attempt to reach the agent. Resolves on successful handshake. */
+  private probeAgent(udsPath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const sock: Socket = createConnection(udsPath);
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        sock.destroy();
+        reject(new Error("probe timeout"));
+      }, 1000);
+
+      const finish = (err: Error | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        sock.destroy();
+        if (err) reject(err);
+        else resolve();
+      };
+
+      sock.on("error", (err) => finish(err));
+      sock.on("end", () => finish(new Error("probe closed early")));
+      sock.on("connect", () => {
+        sock.write(`CONNECT ${AGENT_VSOCK_PORT}\n`);
+      });
+      sock.on("data", (chunk: Buffer) => {
+        const text = chunk.toString("utf8");
+        if (text.startsWith("OK ")) finish(null);
+        else finish(new Error(`bad handshake: ${text.trim()}`));
+      });
+    });
+  }
+
+  private async waitForPath(path: string, timeoutMs: number): Promise<void> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       try {
@@ -391,7 +425,7 @@ export class FirecrackerBackend implements SandboxBackend {
         await new Promise((r) => setTimeout(r, 50));
       }
     }
-    throw new Error(`Timeout waiting for socket: ${path}`);
+    throw new Error(`Timeout waiting for path: ${path}`);
   }
 
   private waitForProcessExit(proc: ChildProcess, timeoutMs: number): Promise<void> {

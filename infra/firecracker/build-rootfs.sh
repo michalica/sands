@@ -129,7 +129,14 @@ fi
 echo "[..] Installing guest agent..."
 cp "$AGENT_DIR/agent.js" "$ROOTDIR/opt/agent/agent.js"
 
-# 6. Create init script — boots straight into the agent
+# 5b. Copy socat (used by init script to bridge guest vsock -> agent Unix socket)
+echo "[..] Copying socat..."
+SOCAT_BIN=$(command -v socat) || { echo "ERROR: socat not on host"; exit 1; }
+copy_binary_with_libs "$SOCAT_BIN" "/usr/local/bin/socat"
+ensure_dynamic_linker "$SOCAT_BIN"
+
+# 6. Create init script — agent listens on UDS, socat bridges vsock:5252 → UDS.
+# Kernel boot chatter still goes to ttyS0 but nothing on the host is reading it.
 cat > "$ROOTDIR/init" << 'EOF'
 #!/bin/sh
 mount -t proc proc /proc
@@ -137,9 +144,23 @@ mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
 mkdir -p /tmp
 
-# Start guest agent on serial console
-# stderr goes to /dev/null to avoid mixing with the JSON protocol on ttyS0
-exec /usr/local/bin/node /opt/agent/agent.js </dev/ttyS0 >/dev/ttyS0 2>/tmp/agent.log
+# Start guest agent (creates /tmp/agent.sock).
+/usr/local/bin/node /opt/agent/agent.js >/tmp/agent.log 2>&1 &
+
+# Wait for the agent's Unix socket to appear before starting the bridge.
+i=0
+while [ ! -S /tmp/agent.sock ]; do
+  i=$((i+1))
+  if [ "$i" -gt 100 ]; then
+    echo "agent did not create /tmp/agent.sock within 5s" > /dev/ttyS0
+    exit 1
+  fi
+  sleep 0.05
+done
+
+# Bridge: each incoming vsock:5252 connection from the host is forwarded
+# to /tmp/agent.sock. fork keeps socat accepting concurrent connections.
+exec /usr/local/bin/socat VSOCK-LISTEN:5252,fork,reuseaddr UNIX-CONNECT:/tmp/agent.sock
 EOF
 chmod +x "$ROOTDIR/init"
 

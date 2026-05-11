@@ -23,6 +23,15 @@ if [ ! -e /dev/kvm ]; then
 fi
 echo "[OK] /dev/kvm present"
 
+# 1b. vhost_vsock — required for Firecracker's virtio-vsock to the guest agent.
+modprobe vhost_vsock || true
+echo "vhost_vsock" > /etc/modules-load.d/sandboxjs-vsock.conf
+if [ ! -e /dev/vhost-vsock ]; then
+  echo "ERROR: /dev/vhost-vsock missing after modprobe vhost_vsock"
+  exit 1
+fi
+echo "[OK] /dev/vhost-vsock present"
+
 # 2. Install base packages
 export DEBIAN_FRONTEND=noninteractive
 apt-get update

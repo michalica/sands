@@ -1,43 +1,63 @@
 #!/usr/bin/env node
 
 /**
- * SandboxJS Guest Agent — Serial Console Mode
+ * SandboxJS Guest Agent — Vsock Mode
  *
- * Communicates via process.stdin/stdout which the init script
- * connects to /dev/ttyS0 (Firecracker serial console).
+ * Listens on a Unix domain socket at /tmp/agent.sock. A `socat` bridge
+ * forwards from the guest's vsock port 5252 to this socket, so the host
+ * connects via vsock (CONNECT 5252) and traffic lands here.
  *
- * Protocol:
- *   Host → Guest:  {"type":"execute","code":"...","timeoutMs":5000}\n
- *   Guest → Host:  {"stdout":"...","stderr":"","exitCode":0,"durationMs":12,"timedOut":false}\n
+ * Wire format (per connection): one request, one response.
+ *   <uint32 BE length><JSON request>
+ *   <uint32 BE length><JSON response>
+ *
+ * Request:  {"type":"execute","code":"...","timeoutMs":5000}
+ * Response: {"stdout":"...","stderr":"...","exitCode":0,"durationMs":12,"timedOut":false}
+ *
+ * One connection per call — that gives us multiple concurrent calls per
+ * sandbox for free (no shared single-slot pendingResolve dance).
  */
 
+const net = require("net");
 const { spawn } = require("child_process");
-const { writeFileSync } = require("fs");
-const { createInterface } = require("readline");
+const { writeFileSync, unlinkSync } = require("fs");
 
-function send(data) {
-  process.stdout.write(JSON.stringify(data) + "\n");
-}
+const SOCK_PATH = "/tmp/agent.sock";
 
-// Signal ready
-process.stdout.write("SANDBOXJS_AGENT_READY\n");
+try { unlinkSync(SOCK_PATH); } catch {}
 
-const rl = createInterface({ input: process.stdin });
+const server = net.createServer((conn) => {
+  let buffer = Buffer.alloc(0);
+  let expected = null;
 
-rl.on("line", (line) => {
-  let request;
-  try {
-    request = JSON.parse(line.trim());
-  } catch {
-    return;
-  }
+  conn.on("data", (chunk) => {
+    buffer = Buffer.concat([buffer, chunk]);
 
+    if (expected === null && buffer.length >= 4) {
+      expected = buffer.readUInt32BE(0);
+      buffer = buffer.subarray(4);
+    }
+    if (expected !== null && buffer.length >= expected) {
+      const payload = buffer.subarray(0, expected).toString("utf8");
+      buffer = buffer.subarray(expected);
+      expected = null;
+
+      let request;
+      try { request = JSON.parse(payload); } catch {
+        return respond(conn, { error: "invalid JSON" });
+      }
+      handle(conn, request);
+    }
+  });
+
+  conn.on("error", () => {});
+});
+
+function handle(conn, request) {
   if (request.type !== "execute" || typeof request.code !== "string") {
-    return;
+    return respond(conn, { error: "unknown request type" });
   }
-
   const { code, timeoutMs = 5000 } = request;
-
   writeFileSync("/tmp/job.js", code, "utf-8");
 
   const start = Date.now();
@@ -47,18 +67,12 @@ rl.on("line", (line) => {
   let settled = false;
 
   const child = spawn("/usr/local/bin/node", ["--max-old-space-size=256", "/tmp/job.js"], {
-    timeout: timeoutMs,
     env: { PATH: "/usr/local/bin:/usr/bin:/bin" },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  child.stdout.on("data", (chunk) => {
-    stdout += chunk.toString();
-  });
-
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk.toString();
-  });
+  child.stdout.on("data", (c) => { stdout += c.toString(); });
+  child.stderr.on("data", (c) => { stderr += c.toString(); });
 
   const timer = setTimeout(() => {
     timedOut = true;
@@ -69,7 +83,7 @@ rl.on("line", (line) => {
     clearTimeout(timer);
     if (settled) return;
     settled = true;
-    send({
+    respond(conn, {
       stdout,
       stderr,
       exitCode: exitCode ?? 1,
@@ -82,7 +96,7 @@ rl.on("line", (line) => {
     clearTimeout(timer);
     if (settled) return;
     settled = true;
-    send({
+    respond(conn, {
       stdout,
       stderr: stderr + err.message,
       exitCode: 1,
@@ -90,4 +104,20 @@ rl.on("line", (line) => {
       timedOut: false,
     });
   });
+}
+
+function respond(conn, data) {
+  const payload = Buffer.from(JSON.stringify(data), "utf8");
+  const lenBuf = Buffer.alloc(4);
+  lenBuf.writeUInt32BE(payload.length);
+  conn.end(Buffer.concat([lenBuf, payload]));
+}
+
+server.on("error", (err) => {
+  console.error("agent server error:", err.message);
+  process.exit(1);
+});
+
+server.listen(SOCK_PATH, () => {
+  console.error("agent listening on " + SOCK_PATH);
 });
