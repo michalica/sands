@@ -237,13 +237,10 @@ describe("API routes", () => {
       const res = await app.inject({ method: "GET", url: "/templates" });
 
       expect(res.statusCode).toBe(200);
-      expect(res.json().templates).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ id: "node-22" }),
-          expect.objectContaining({ id: "python-3.12" }),
-          expect.objectContaining({ id: "browser-chromium" }),
-        ]),
-      );
+      expect(res.json().templates).toEqual([
+        expect.objectContaining({ id: "node-22" }),
+        expect.objectContaining({ id: "python-3.12" }),
+      ]);
     });
   });
 });

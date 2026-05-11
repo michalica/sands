@@ -1,0 +1,8 @@
+{
+  "id": "node-22",
+  "name": "Node.js 22",
+  "runtime": "node",
+  "packages": ["node"],
+  "files": [],
+  "commands": []
+}

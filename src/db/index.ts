@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { templates } from "./schema.js";
 import { sql } from "drizzle-orm";
-import { config } from "../config.js";
+import { getSeedTemplates } from "../templates/catalog.js";
 
 export type Db = ReturnType<typeof drizzle>;
 
@@ -57,38 +57,12 @@ export function createDb(path: string): Db {
     )
   `);
 
-  const seedTemplates = [
-    {
-      id: "node-22",
-      name: "Node.js 22",
-      version: "22",
-      rootfsPath: config.rootfsPath,
-      kernelPath: config.kernelImagePath,
-      defaultPackages: JSON.stringify(["node"]),
-      buildMeta: JSON.stringify({ seeded: true }),
-    },
-    {
-      id: "python-3.12",
-      name: "Python 3.12",
-      version: "3.12",
-      rootfsPath: config.rootfsPath,
-      kernelPath: config.kernelImagePath,
-      defaultPackages: JSON.stringify(["python3", "pip"]),
-      buildMeta: JSON.stringify({ seeded: true }),
-    },
-    {
-      id: "browser-chromium",
-      name: "Browser Chromium",
-      version: "chromium",
-      rootfsPath: config.rootfsPath,
-      kernelPath: config.kernelImagePath,
-      defaultPackages: JSON.stringify(["chromium"]),
-      buildMeta: JSON.stringify({ seeded: true }),
-    },
-  ];
-
-  for (const template of seedTemplates) {
-    db.insert(templates).values(template).onConflictDoNothing().run();
+  for (const template of getSeedTemplates()) {
+    db.insert(templates).values({
+      ...template,
+      defaultPackages: JSON.stringify(template.defaultPackages),
+      buildMeta: JSON.stringify(template.buildMeta),
+    }).onConflictDoNothing().run();
   }
 
   db.run(sql`CREATE INDEX IF NOT EXISTS idx_logs_sandbox ON execution_logs(sandbox_id)`);

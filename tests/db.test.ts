@@ -152,9 +152,7 @@ describe("SandboxStore", () => {
     it("lists seeded templates", () => {
       const templates = store.listTemplates();
 
-      expect(templates.map((template) => template.id)).toEqual(
-        expect.arrayContaining(["node-22", "python-3.12", "browser-chromium"]),
-      );
+      expect(templates.map((template) => template.id)).toEqual(["node-22", "python-3.12"]);
     });
 
     it("retrieves a template by id", () => {
