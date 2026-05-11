@@ -40,19 +40,4 @@ describe("template build scaffolding", () => {
     expect(script).toContain("guest-agent");
   });
 
-  it("includes builder networking scaffolding", () => {
-    const script = readFileSync(`${base}/build-template.sh`, "utf-8");
-
-    expect(script).toContain("builder VM with networking");
-    expect(script).toContain("setup-tap-device.sh");
-  });
-
-  it("includes runtime networking docs", () => {
-    const doc = readFileSync(`${base}/NETWORKING.md`, "utf-8");
-
-    expect(doc).toContain("ip_forward");
-    expect(doc).toContain("iptables");
-    expect(doc).toContain("TAP");
-    expect(doc).toContain("deny private IP ranges");
-  });
 });

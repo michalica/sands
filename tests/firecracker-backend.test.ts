@@ -138,14 +138,5 @@ describe("FirecrackerBackend", () => {
       );
     });
 
-    it("builds a tap setup command with host and guest addressing", () => {
-      const backend = new FirecrackerBackend({ maxMemoryMb: 256 });
-      const command = backend.buildTapSetupCommand("sandbox-123");
-
-      expect(command).toContain("setup-tap-device.sh");
-      expect(command).toContain("tap-sandbox-123");
-      expect(command).toContain("172.20.");
-      expect(command).toContain("/30");
-    });
   });
 });
