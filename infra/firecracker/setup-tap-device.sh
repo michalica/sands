@@ -13,4 +13,12 @@ GUEST_IP="$3"
 echo "[..] Setting up TAP device: $TAP_NAME"
 echo "[..] Host CIDR: $HOST_CIDR"
 echo "[..] Guest IP:  $GUEST_IP"
-echo "[..] This scaffold will become the networking primitive for builder VMs and runtime VMs."
+
+if ! ip link show "$TAP_NAME" >/dev/null 2>&1; then
+  ip tuntap add dev "$TAP_NAME" mode tap
+fi
+
+ip addr replace "$HOST_CIDR" dev "$TAP_NAME"
+ip link set "$TAP_NAME" up
+
+echo "[OK] TAP device ready: $TAP_NAME"

@@ -6,7 +6,7 @@ import type { SandboxBackend, ExecutionResult, SandboxNetworkPolicy, SandboxTemp
 import { FirecrackerApi } from "./firecracker-api.js";
 
 const REQUIRES_LINUX = "FirecrackerBackend requires Linux with KVM enabled";
-const BOOT_ARGS = "console=ttyS0 reboot=k panic=1 pci=off init=/init";
+const BASE_BOOT_ARGS = "console=ttyS0 reboot=k panic=1 pci=off init=/init";
 const AGENT_READY_MARKER = "SANDBOXJS_AGENT_READY";
 const API_SOCKET_NAME = "run/firecracker.socket";
 
@@ -149,6 +149,16 @@ export class FirecrackerBackend implements SandboxBackend {
     return `${process.cwd()}/infra/firecracker/setup-tap-device.sh ${tapName} ${pair.hostCidr} ${pair.guestIp}`;
   }
 
+  buildBootArgs(sandboxId: string, networkPolicy?: SandboxNetworkPolicy): string {
+    if (!this.shouldEnableNetworking(networkPolicy)) {
+      return BASE_BOOT_ARGS;
+    }
+
+    const pair = this.networkPairForSandbox(sandboxId);
+    const hostIp = pair.hostCidr.split("/")[0];
+    return `${BASE_BOOT_ARGS} ip=${pair.guestIp}::${hostIp}:255.255.255.252::eth0:off`;
+  }
+
   shouldEnableNetworking(networkPolicy?: SandboxNetworkPolicy): boolean {
     return networkPolicy?.enabled === true;
   }
@@ -160,6 +170,8 @@ export class FirecrackerBackend implements SandboxBackend {
 
     const tapName = this.getTapDeviceName(sandboxId);
     const commands = [
+      `iptables -A FORWARD -o ${tapName} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT`,
+      `iptables -A FORWARD -i ${tapName} -j ACCEPT`,
       `iptables -A FORWARD -i ${tapName} -d 10.0.0.0/8 -j REJECT`,
       `iptables -A FORWARD -i ${tapName} -d 172.16.0.0/12 -j REJECT`,
       `iptables -A FORWARD -i ${tapName} -d 192.168.0.0/16 -j REJECT`,
@@ -274,7 +286,7 @@ export class FirecrackerBackend implements SandboxBackend {
 
     await api.put("/boot-source", {
       kernel_image_path: "/vmlinux",
-      boot_args: BOOT_ARGS,
+      boot_args: this.buildBootArgs(sandboxId, networkPolicy),
     });
 
     await api.put("/drives/rootfs", {
