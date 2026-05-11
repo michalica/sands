@@ -1,11 +1,12 @@
 import { eq, and, lt, sql } from "drizzle-orm";
-import { sandboxes, executionLogs } from "./schema.js";
+import { sandboxes, executionLogs, templates } from "./schema.js";
 import type { Db } from "./index.js";
-import type { ExecutionResult } from "../sandbox/types.js";
+import type { ExecutionResult, SandboxTemplate } from "../sandbox/types.js";
 
 export interface SandboxRecord {
   sandboxId: string;
   userId: string | null;
+  templateId: string;
   createdAt: number;
   lastUsedAt: number;
   status: "running" | "destroyed";
@@ -20,13 +21,24 @@ export interface LogRecord {
   result: ExecutionResult;
 }
 
+interface TemplateRow {
+  id: string;
+  name: string;
+  version: string;
+  rootfsPath: string;
+  kernelPath: string;
+  defaultPackages: string;
+  buildMeta: string;
+}
+
 export class SandboxStore {
   constructor(private db: Db) {}
 
-  createSandbox(info: { sandboxId: string; userId?: string | null; createdAt: number; lastUsedAt: number }): void {
+  createSandbox(info: { sandboxId: string; userId?: string | null; templateId: string; createdAt: number; lastUsedAt: number }): void {
     this.db.insert(sandboxes).values({
       sandboxId: info.sandboxId,
       userId: info.userId ?? null,
+      templateId: info.templateId,
       createdAt: info.createdAt,
       lastUsedAt: info.lastUsedAt,
       status: "running",
@@ -107,5 +119,28 @@ export class SandboxStore {
       .where(eq(executionLogs.sandboxId, sandboxId))
       .all();
     return rows[0]?.count ?? 0;
+  }
+
+  listTemplates(): SandboxTemplate[] {
+    const rows = this.db.select().from(templates).all() as TemplateRow[];
+    return rows.map((row) => this.mapTemplate(row));
+  }
+
+  getTemplate(id: string): SandboxTemplate | null {
+    const rows = this.db.select().from(templates).where(eq(templates.id, id)).all() as TemplateRow[];
+    if (rows.length === 0) return null;
+    return this.mapTemplate(rows[0]);
+  }
+
+  private mapTemplate(row: TemplateRow): SandboxTemplate {
+    return {
+      id: row.id,
+      name: row.name,
+      version: row.version,
+      rootfsPath: row.rootfsPath,
+      kernelPath: row.kernelPath,
+      defaultPackages: JSON.parse(row.defaultPackages) as string[],
+      buildMeta: JSON.parse(row.buildMeta) as Record<string, unknown>,
+    };
   }
 }

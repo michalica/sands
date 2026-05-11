@@ -44,6 +44,28 @@ describe("API routes", () => {
       // cleanup
       await manager.destroy(body.sandboxId);
     });
+
+    it("accepts a template when creating a sandbox", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/sandboxes",
+        payload: { template: "python-3.12" },
+      });
+
+      expect(res.statusCode).toBe(201);
+      await manager.destroy(res.json().sandboxId);
+    });
+
+    it("rejects unknown templates", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/sandboxes",
+        payload: { template: "missing-template" },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: "Unknown template: missing-template" });
+    });
   });
 
   describe("POST /sandboxes/:id/execute", () => {
@@ -207,6 +229,21 @@ describe("API routes", () => {
       const res = await app.inject({ method: "DELETE", url: `/sandboxes/${sandboxId}` });
 
       expect(res.statusCode).toBe(404);
+    });
+  });
+
+  describe("GET /templates", () => {
+    it("returns available templates", async () => {
+      const res = await app.inject({ method: "GET", url: "/templates" });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().templates).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "node-22" }),
+          expect.objectContaining({ id: "python-3.12" }),
+          expect.objectContaining({ id: "browser-chromium" }),
+        ]),
+      );
     });
   });
 });

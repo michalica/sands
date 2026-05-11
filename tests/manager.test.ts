@@ -39,8 +39,12 @@ describe("SandboxManager", () => {
       expect(info.sandboxId).toBeDefined();
       expect(info.createdAt).toBeTypeOf("number");
       expect(info.lastUsedAt).toBeTypeOf("number");
-      expect(backend.create).toHaveBeenCalledWith(info.sandboxId);
+      expect(backend.create).toHaveBeenCalledWith(
+        info.sandboxId,
+        expect.objectContaining({ id: "node-22" }),
+      );
       expect(manager.activeSandboxCount).toBe(1);
+      expect(info.templateId).toBe("node-22");
     });
 
     it("creates multiple sandboxes with unique ids", async () => {
@@ -49,6 +53,10 @@ describe("SandboxManager", () => {
 
       expect(a.sandboxId).not.toBe(b.sandboxId);
       expect(manager.activeSandboxCount).toBe(2);
+    });
+
+    it("rejects unknown templates", async () => {
+      await expect(manager.create(null, "missing-template")).rejects.toThrow("Unknown template");
     });
   });
 

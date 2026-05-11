@@ -8,9 +8,9 @@ SandboxJS (working name)
 
 ## 1. Product Vision
 
-SandboxJS is a **secure, fast runtime for executing untrusted JavaScript**, designed specifically for AI applications (agents, copilots, code interpreters).
+SandboxJS is a **secure, fast runtime for executing untrusted JavaScript and tool-use code**, designed specifically for AI applications (agents, copilots, code interpreters).
 
-> “Run user or AI-generated JS safely in milliseconds — without worrying about security.”
+> "Run user or AI-generated code safely in milliseconds — without worrying about security."
 
 ---
 
@@ -41,22 +41,28 @@ Current solutions are flawed:
 * time-consuming
 * easy to get wrong (security risk)
 
+### Existing competitors (e2b)
+
+* solid product, but closed-hosted; significant per-second pricing at scale
+* opportunity for an open / self-hostable alternative with the same surface
+
 ---
 
 ## 3. Target Users
 
-### Primary (MVP focus)
+### Primary
 
-* Indie developers building:
+* Indie developers and small teams building:
 
   * AI agents
   * code interpreters
   * copilots
+* Teams that need a self-hostable e2b-equivalent for compliance, cost, or control reasons
 
 ### Secondary
 
 * SaaS apps allowing user-defined scripts
-* platforms running plugins/extensions
+* Platforms running plugins/extensions
 
 ---
 
@@ -64,10 +70,11 @@ Current solutions are flawed:
 
 SandboxJS provides:
 
-* 🔒 Strong isolation (Firecracker microVMs)
-* ⚡ Fast execution (<200ms startup target)
-* 🧠 Designed for AI workflows (iterative execution)
-* 🧩 Simple API (no infra knowledge required)
+* Strong isolation (Firecracker microVMs + jailer)
+* Fast execution (<200ms cold start target; <10ms with snapshots)
+* Designed for AI workflows (iterative execution within a long-lived sandbox)
+* Simple API (no infra knowledge required for clients)
+* Self-hostable (open code, your hardware or your cloud)
 
 ---
 
@@ -75,231 +82,428 @@ SandboxJS provides:
 
 ### UC1: Run AI-generated code safely
 
-User:
-→ sends JS from LLM
-
-System:
-→ executes in isolated VM
-
-Returns:
-→ structured result
-
----
+LLM produces JS / Python → sandbox executes it → structured result returned to the agent loop.
 
 ### UC2: Code interpreter backend
 
-User:
-→ builds ChatGPT-like “run code” feature
-
-System:
-→ handles execution lifecycle
-
----
+Application offers a ChatGPT-style "run code" feature; the sandbox handles execution lifecycle and isolation.
 
 ### UC3: Agent tool execution
 
-User:
-→ LLM writes JS tool
+Agent writes a tool (script that calls APIs, parses data, returns JSON) and runs it in a sandbox with controlled network access.
 
-System:
-→ runs tool safely + returns output
+### UC4: Browser-using agent
+
+Agent drives a headless Chromium inside a sandbox via the Chrome DevTools Protocol — fetches pages, fills forms, screenshots results.
+
+### UC5: Data analysis sandbox
+
+Agent uploads a CSV, runs analysis code (pandas, etc.), downloads the resulting chart/report.
+
+### UC6: MCP-native sandbox
+
+Two angles:
+
+* **Claude uses SandboxJS via MCP.** A first-party MCP server exposes sandbox operations (`create`, `run_command`, `read_file`, `write_file`, …) as MCP tools so Claude Desktop / Claude Code / any MCP client gets sandboxes natively without REST glue.
+* **Sandbox hosts other MCP servers.** A `mcp-gateway` template runs an MCP gateway inside a sandbox that proxies to community MCP servers (Stripe, Notion, GitHub, Docker MCP Catalog, …). The agent connects to the sandbox; untrusted MCP server processes run safely inside the microVM.
 
 ---
 
-## 6. MVP Scope
+## 6. Current State (v1, shipped)
 
-### 6.1 Core API
+The MVP is deployed on a single GCP `n2-standard-2` VM in `europe-west3` (`infra/terraform/gcp/`).
 
-#### Create Sandbox
+### Shipped capabilities
 
-```http
-POST /sandboxes
+* `POST /sandboxes` — create a sandbox (boots a Firecracker microVM via jailer)
+* `POST /sandboxes/:id/execute` — run JS code, returns `{stdout, stderr, exitCode, durationMs, timedOut}`
+* `GET /sandboxes/:id` — sandbox detail
+* `GET /sandboxes/:id/logs` — execution history
+* `DELETE /sandboxes/:id` — destroy sandbox
+* `GET /sandboxes` — list, with count + max
+* `GET /metrics` — basic system metrics
+* `GET /health` — health check
+* WebSocket `/events` — lifecycle events
+* Better-Auth + API key plugin (Bearer token auth)
+* Next.js dashboard with signup/login, sandbox list, API key management
+* SQLite (shared between API and dashboard)
+* `infra/firecracker/` — kernel download, minimal rootfs build (busybox + Node 20 + guest agent)
+* Per-sandbox cgroup CPU quota (10% per microVM, configurable)
+* Per-sandbox memory cap (256 MB)
+* 5-minute idle TTL with automatic cleanup
+* End-to-end deploy: `terraform apply` → `make deploy` brings up API + dashboard + Firecracker on the VM
+* Capacity: **17 concurrent microVMs** on the current VM size
+
+### Current limitations
+
+* Only JavaScript via `eval`-style execution — no shell commands, no Python
+* No filesystem I/O for clients (can't `read`/`write` files in the sandbox)
+* No network in the guest (no `fetch`, no `npm install`)
+* No multiple processes per sandbox
+* No PTY / interactive terminal
+* No exposed-port forwarding (can't host a server inside a sandbox)
+* Single-host (no fleet of workers)
+* No snapshots (every boot is cold ~150ms)
+* Observability is bare: structured logs to journalctl, no metrics, no traces
+* Guest ↔ host channel is serial-console JSON RPC (slow, single in-flight call per VM)
+
+---
+
+## 7. v2 Goals
+
+Bring SandboxJS to **functional parity with e2b's core sandbox surface** so AI applications can adopt it as a drop-in alternative.
+
+Specific goals:
+
+1. Support Python and JavaScript via arbitrary-command execution.
+2. Support file upload/download between host and sandbox.
+3. Support multiple concurrent processes per sandbox, with stdout/stderr streaming and stdin.
+4. Support internet access from the guest, with abuse safeguards.
+5. Support exposed-port forwarding (sandbox runs an HTTP server, client gets a URL).
+6. Support custom templates (different rootfs per use case: node, python, browser, mcp-gateway).
+7. Production-grade observability: structured logs, metrics, alerts.
+8. First-party **MCP server** exposing SandboxJS operations as MCP tools so Claude clients adopt it natively.
+
+Long-term (v3+): horizontal scaling, snapshot-based fast boot, user-uploaded templates, persistent volumes, **sandbox-hosted MCP gateway** (e2b-style) running community MCP servers inside a microVM.
+
+---
+
+## 8. v2 Scope — Tiered Roadmap
+
+### Tier 1 — Foundation (~10–14 days)
+
+Required before any user-facing tier-2/3 feature is meaningful.
+
+**1.1 Observability (3–4 days)**
+
+* Pino structured logs with `sandbox_id`, `user_id`, `template`, `request_id` fields
+* Prometheus-format `/metrics` endpoint exposing:
+
+  * Counters: `sandboxes_created_total`, `sandboxes_destroyed_total`, `executions_total{outcome}`
+  * Histograms: `cold_start_ms`, `execution_ms`, `template_load_ms`
+  * Gauges: `active_sandboxes`, `microvm_memory_used_bytes`
+* GCP Cloud Logging integration (or self-hosted Loki)
+* Cloud Monitoring dashboard with the above
+* Alerts on `error_rate > 5%`, `microvm_memory > 90%`
+
+**1.2 Templates (2–3 days)**
+
+* `templates` table (id, name, version, rootfs_path, kernel_path, default_packages, build_meta)
+* `infra/firecracker/build-template.sh` accepts a spec (apt packages, npm globals, files to include) and produces an `ext4`
+* Pre-built templates shipped: `node-22`, `python-3.12`, `browser-chromium`
+* `POST /sandboxes` accepts optional `template` field; defaults to `node-22`
+* `GET /templates` lists available templates
+
+**1.3 Vsock migration (3 days)**
+
+* Switch guest ↔ host channel from serial console to virtio-vsock
+* Required for fast file I/O, multi-stream multiplexing, port forwarding
+* Confirm `vhost_vsock` is available on the host (works on GCP n2 + Ubuntu 24.04)
+* Rewrite `firecracker-backend.ts` and `infra/firecracker/guest-agent/agent.js` to use vsock + length-prefixed framing
+* Each guest agent listens on multiple vsock ports (one for control, one per stream)
+
+**1.4 File operations (2 days, on vsock)**
+
+* `POST /sandboxes/:id/files` with `path` and raw body → write file in guest
+* `GET /sandboxes/:id/files?path=…` → read file from guest
+* `GET /sandboxes/:id/files?path=…&list=true` → directory listing
+* `DELETE /sandboxes/:id/files?path=…`
+* Reasonable size limits (10 MB default, configurable per template)
+
+**1.5 Networking + hardening (5–7 days)**
+
+* TAP device per microVM, allocated from a `/16` block
+* iptables NAT for egress; deny ranges: `10/8`, `172.16/12`, `192.168/16`, `127/8`, `169.254/16`
+* DNS proxy with allowlist option (log all queries by default)
+* `tc` qdisc per microVM for bandwidth limiting (10 Mbps default)
+* `conntrack` limit per microVM (1000 connections default)
+* IP rotation / pool exhaustion handling
+* Documented threat model and known limitations
+
+**1.6 MCP server (SandboxJS-native) (2–3 days)**
+
+Independent of the rest of Tier 1 — just calls the existing REST API. Worth doing early because it makes SandboxJS Claude-native and is a strong adoption hook.
+
+* `mcp-server/` package, depends only on `@modelcontextprotocol/sdk`
+* Stdio transport for local use, HTTP transport for remote use
+* Tools exposed: `sandbox_create`, `sandbox_destroy`, `sandbox_run_command`, `sandbox_read_file`, `sandbox_write_file`, `sandbox_list`
+* Auth: passes through user-supplied SandboxJS API key
+* Distributed as `npx @sandboxjs/mcp-server` or pre-built binary
+* Documentation: ready-to-paste `claude mcp add` snippet pointing at a local or hosted gateway
+* Note: tools that depend on Tier 1.4 (file ops) or Tier 1.5 (networking) ship in v2 of the MCP server once those tiers land
+
+### Tier 2 — Real product (~10 days)
+
+**2.1 Multi-process exec (3 days)**
+
+* Replace single `execute` endpoint with a `commands` endpoint
+* `POST /sandboxes/:id/commands` → spawn process, return handle (PID + stream IDs)
+* WebSocket `/sandboxes/:id/commands/:pid/stream` → stdout/stderr stream
+* `POST /sandboxes/:id/commands/:pid/stdin` → write to process stdin
+* `DELETE /sandboxes/:id/commands/:pid` → kill process
+* Guest agent runs a session manager that owns multiple child processes
+
+**2.2 Long-running sandboxes (2 days)**
+
+* Configurable timeout: default 5 min, max 1 hour (configurable per template/user)
+* `POST /sandboxes/:id/extend {ms}` to reset the idle timer
+* Persist sandbox metadata in DB so reconnects across API restarts work
+* Background reaper for expired sandboxes
+
+**2.3 Exposed ports (3 days)**
+
+* `GET /sandboxes/:id/host?port=N` → returns a public URL
+* Caddy reverse proxy with dynamic config: subdomain pattern `<port>-<sandbox-id>.sandbox.<domain>`
+* Requires a wildcard DNS record + wildcard TLS cert
+* Proxy from public HTTPS to guest TAP IP + port
+* Auth check on the proxy (token must match sandbox owner)
+
+**2.4 Reconnect / metadata (2 days)**
+
+* `POST /sandboxes` accepts `metadata: {key: value}` (queryable kv)
+* `GET /sandboxes?metadata.user=X` filtering
+* `Sandbox.connect(id)` works server-side (sandbox already persisted; nothing extra)
+
+### Tier 3 — Polish (~5–8 days)
+
+**3.1 PTY / terminal (3 days)**
+
+* Guest agent spawns shell with `forkpty()`
+* `POST /sandboxes/:id/pty` → create PTY, returns handle
+* WebSocket stream for data in/out + resize signals
+* `POST /sandboxes/:id/pty/:id/resize {rows, cols}`
+
+**3.2 Browser template (1–2 days)**
+
+* Template `browser-chromium` includes Chromium + Playwright pre-installed
+* Chrome runs with `--remote-debugging-port=9222`
+* CDP endpoint exposed via 2.3 (port forwarding)
+* Client uses Playwright `connect()` against the returned URL
+
+**3.3 User-built templates (3–5 days)**
+
+* Accept a Dockerfile-equivalent spec
+* Build queue on the host (heavy operation, serialize)
+* Security review: input validation, build sandboxing, output size limits
+
+**3.4 `mcp-gateway` template (e2b-style sandbox-hosted MCP) (3–5 days)**
+
+Depends on Tier 1 (templates + networking) and Tier 2.3 (exposed ports).
+
+* Pre-built template containing an MCP gateway (e.g. Docker MCP Catalog runner) plus a curated set of MCP servers
+* Sandbox initialization accepts per-server API keys via env vars or initial file write
+* MCP gateway listens on a guest port, exposed publicly via Tier 2.3 port forwarding
+* Returns a connect URL + bearer token at sandbox creation
+* Client: `claude mcp add --transport http <sandbox-url> --header "Authorization: Bearer <token>"`
+* End result mirrors e2b's MCP gateway product, self-hosted
+
+### Tier 4 — Operations (open-ended, only when needed)
+
+**4.1 Snapshots / fast boot**
+
+* Use Firecracker's snapshot API (`PUT /snapshot/create`, `PUT /snapshot/load`)
+* Pre-warm pool of N snapshot-restored microVMs per template
+* Drops cold start from ~150ms to ~5ms
+
+**4.2 Multi-host worker fleet**
+
+* Postgres replaces SQLite (only when actually needed)
+* Control plane vs worker split
+* Atomic VM reservation via `FOR UPDATE SKIP LOCKED`
+* Heartbeat-based reaping
+
+**4.3 Dashboard surface**
+
+* Template browser
+* Sandbox list with live CPU/memory
+* Per-sandbox log viewer
+* Quota / billing UI
+
+---
+
+## 9. Non-Goals (v2)
+
+* **Persistent volumes** — sandboxes are ephemeral. Files go in, results come out. No long-lived storage between sandbox lifetimes.
+* **Multi-region deployment** — single region in v2.
+* **User-paid billing system** — auth and quotas yes, money no.
+* **Custom kernel per template** — one shared kernel, only rootfs varies.
+* **Windows guests** — Linux only.
+* **GPU passthrough** — out of scope for v2.
+
+---
+
+## 10. Technical Architecture (current + v2 target)
+
+### Current (single-VM)
+
+```
+┌─────────────────────────────────────────────┐
+│ GCP n2-standard-2 (nested-virt enabled)     │
+│                                             │
+│  Dashboard (Next.js, :3001) ──┐             │
+│                                ├── SQLite   │
+│  API (Fastify, :3000) ────────┘             │
+│            │                                │
+│            ▼                                │
+│  SandboxManager                             │
+│            │                                │
+│            ▼                                │
+│  Firecracker microVMs (jailer chroot)       │
+│   - serial console JSON RPC                 │
+│   - no network                              │
+│   - 256 MB RAM, 10% vCPU each               │
+└─────────────────────────────────────────────┘
 ```
 
-Response:
+### v2 target (still single-VM, more capable)
 
-```json
-{ "sandboxId": "abc123" }
+```
+┌─────────────────────────────────────────────────────┐
+│ GCP n2-standard-2/4/8                               │
+│                                                     │
+│  Caddy (:80, :443)                                  │
+│   ├── /         → Dashboard                         │
+│   ├── /api/*    → API                               │
+│   └── <port>-<sbx>.sandbox.* → guest TAP            │
+│                                                     │
+│  Dashboard (Next.js) ──┐                            │
+│                         ├── SQLite (still)          │
+│  API (Fastify) ─────────┘                           │
+│        │                                            │
+│        ▼                                            │
+│  SandboxManager                                     │
+│        │                                            │
+│        ▼                                            │
+│  Firecracker microVMs (jailer chroot)               │
+│   - virtio-vsock for control + files                │
+│   - TAP device for network (NAT'd)                  │
+│   - per-template rootfs                             │
+│   - cgroup CPU/memory limits                        │
+└─────────────────────────────────────────────────────┘
+       │
+       ▼
+  Prometheus + Cloud Logging + Cloud Monitoring
 ```
 
----
+### v3+ target (only if scale demands it)
 
-#### Execute Code
-
-```http
-POST /sandboxes/:id/execute
-```
-
-Input:
-
-```json
-{
-  "code": "console.log('hello')"
-}
-```
-
-Output:
-
-```json
-{
-  "stdout": "hello\n",
-  "stderr": "",
-  "exitCode": 0,
-  "durationMs": 25
-}
-```
+* Control plane VM + worker fleet (multiple Firecracker hosts)
+* Postgres for shared state + VM lease pool
+* Atomic VM reservation pattern
+* Horizontal scaling
 
 ---
 
-#### Destroy Sandbox
+## 11. Security Requirements
 
-```http
-DELETE /sandboxes/:id
-```
-
----
-
-### 6.2 Runtime Features
-
-* JavaScript execution via Node.js
-* Single-file execution (`/tmp/job.js`)
-* Timeout enforcement (e.g. 5s)
-* Memory limits (e.g. 128–256MB)
-* No outbound internet (default)
-
----
-
-### 6.3 Sandbox Lifecycle
-
-* Each sandbox = Firecracker microVM
-* Boot from prebuilt image
-* Execute multiple times per session
-* Destroy on demand or TTL expiry
-
----
-
-### 6.4 Structured Output
-
-Return:
-
-* stdout
-* stderr
-* exitCode
-* duration
-* timeout flag
-
----
-
-### 6.5 Basic Observability
-
-* execution logs per sandbox
-* simple request logging
-
----
-
-## 7. Non-Goals (MVP)
-
-* No multi-language support
-* No file uploads/downloads
-* No package installation (npm)
-* No browser environment
-* No UI dashboard
-* No billing system
-
----
-
-## 8. Technical Architecture
-
-### Host Layer
-
-* Linux VM with KVM enabled
-* Firecracker + jailer
-
-### Control Plane
-
-* Node.js (Fastify) API server
-* Sandbox manager
-
-### Execution Layer
-
-* Firecracker microVMs
-* Minimal Linux rootfs
-* Node.js runtime installed
-
----
-
-### Flow
-
-Client → API → Sandbox Manager → Firecracker VM → Execute JS → Return result
-
----
-
-## 9. Security Requirements
-
-* Strong isolation via microVMs
+* Strong isolation via Firecracker microVMs + jailer
 * No shared filesystem between sandboxes
-* Resource limits enforced
+* Resource limits enforced (CPU, memory, disk via `cpu.max`, `mem_size_mib`, ext4 size)
 * Execution timeout
-* No external network access (default)
+* **v2 networking:** egress allowlist, internal range deny, per-sandbox bandwidth + connection caps
+* No host capabilities granted to guest
+* Guest agent runs as unprivileged user inside the microVM
+* Jailer drops to UID/GID 1000 on the host
+* CORS lock-down (configurable per deployment)
+* TLS required for production (via Caddy auto Let's Encrypt)
 
 ---
 
-## 10. Success Metrics (MVP)
+## 12. Success Metrics
 
-* Time to first execution < 500ms
-* 0 sandbox escapes
-* 5–10 active users testing API
-* Successful execution rate > 95%
+### v1 (shipped)
+
+* ✅ Time to first execution < 500ms — currently ~200ms
+* ✅ 0 sandbox escapes — none observed
+* 5–10 active users testing API — _in progress_
+* ✅ Successful execution rate > 95%
+
+### v2 (targets)
+
+* Time to first execution < 200ms (cold); < 50ms with snapshots
+* Network-enabled sandbox boot < 500ms
+* p99 file write (10 MB) < 200ms over vsock
+* Support 50 concurrent sandboxes per `n2-standard-4` (16 GB)
+* p99 sandbox API latency < 100ms (excluding execution time)
+* External integrations: at least one open-source AI agent framework using SandboxJS in its docs/examples
 
 ---
 
-## 11. Risks
+## 13. Risks
 
 ### Technical
 
-* Firecracker setup complexity
-* VM startup latency
-* guest ↔ host communication
+* **Vsock kernel support** — host kernel must have `vhost_vsock`. Confirmed on GCP n2 + Ubuntu 24.04. Other hosts (e.g. Pi 5 with default Raspberry Pi OS) may lack it.
+* **Network abuse from sandboxes** — without strict egress controls, becomes a botnet host. Must implement hardening before launching networking.
+* **Boot latency at scale** — without snapshots, 1000 concurrent boots takes minutes. Snapshots are non-trivial but required eventually.
+* **Template build pipeline complexity** — user-uploaded Dockerfiles are a security review nightmare. Defer.
 
 ### Product
 
-* unclear demand vs E2B
-* users defaulting to Docker anyway
+* **e2b moat** — they have brand, customers, polished tooling. Self-host + open-source is the differentiation.
+* **Niche market** — code-execution sandboxes have a small total market. AI agent boom is the demand-side bet.
+
+### Operational
+
+* **Single-VM SPOF** — current setup has no redundancy. Acceptable for v2; fleet architecture solves it.
+* **Cost** — currently ~$45/mo on GCP. Scales linearly with VM size.
 
 ---
 
-## 12. Future Roadmap
+## 14. Phasing — what we actually commit to
 
-### Phase 2
+### Phase A (next): Tier 1 — Foundation
 
-* Warm VM pool (reduce latency)
-* Streaming logs
-* File system support
+* Deliverable: working single-VM SandboxJS with templates, file I/O, network, observability, and a Claude-native MCP server.
+* Timeline: ~2–3 weeks of focused work.
+* Definition of done:
 
-### Phase 3
+  * Three templates (node, python, browser) available via `POST /sandboxes`
+  * Files read/write over vsock works (tested with 10 MB payloads)
+  * Sandboxes can `curl https://example.com` and `pip install`
+  * Metrics dashboard shows live activity
+  * Network abuse safeguards verified (no internal IPs reachable, bandwidth capped)
+  * `npx @sandboxjs/mcp-server` works in Claude Code / Claude Desktop with create/run/read/write tools
 
-* Multi-language (Python, etc.)
-* Session persistence
-* Tooling APIs
+### Phase B: Tier 2 — Real product
 
-### Phase 4
+* Deliverable: multi-process, long-lived, port-forwarded sandboxes.
+* Timeline: ~2 weeks.
+* Definition of done:
 
-* Model-native runtime features
-* observability + replay
-* hosted cloud platform
+  * Spawn multiple processes per sandbox
+  * Sandbox can host a server, client gets a public HTTPS URL via wildcard TLS
+  * Sandbox metadata is queryable
+  * Reconnect to existing sandbox works across API restart
+
+### Phase C: Tier 3 — Polish
+
+* Browser template demoable end-to-end
+* PTY support for interactive shells
+* User-uploaded templates (with strict spec; not arbitrary Dockerfiles)
+
+### Phase D: Tier 4 — Scale (only if demand justifies)
+
+* Snapshot-based fast boot
+* Worker fleet + Postgres
+* Multi-region
 
 ---
 
-## 13. MVP Definition of Done
+## 15. Open Questions
 
-* Able to:
+* Pricing model — open-source only, hosted offering eventually, or both?
+* Domain — need a `sandbox.<domain>` wildcard for port forwarding in Phase B.
+* Python support — separate template (Tier 1) or separate runtime semantics? (e2b treats it as templates; we should too.)
+* Custom guest kernels — for v2, ship one kernel for all templates. Revisit if a use case demands otherwise.
+* Data retention — execution logs in SQLite forever, or rotate? Pick a default for v2.
 
-  1. Create sandbox
-  2. Execute JS safely
-  3. Return structured output
-  4. Destroy sandbox
+---
 
-* Stable under basic load (10–20 concurrent sandboxes)
+## 16. References
 
-* At least 3 real users testing it
-
+* Current codebase: this repo (`src/`, `dashboard/`, `infra/`)
+* Architectural notes: `/Users/tomasmichalica/.claude/plans/` (planning artifacts from build sessions)
+* Inspiration / competitor: [e2b](https://e2b.dev/) — closed-hosted, polished, paid
+* Firecracker docs: <https://github.com/firecracker-microvm/firecracker>
+* jailer docs: <https://github.com/firecracker-microvm/firecracker/blob/main/docs/jailer.md>

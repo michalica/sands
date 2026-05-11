@@ -2,7 +2,7 @@ import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { copyFile, link, mkdir, access, rm } from "node:fs/promises";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { join, basename } from "node:path";
-import type { SandboxBackend, ExecutionResult } from "./types.js";
+import type { SandboxBackend, ExecutionResult, SandboxTemplate } from "./types.js";
 import { FirecrackerApi } from "./firecracker-api.js";
 
 const REQUIRES_LINUX = "FirecrackerBackend requires Linux with KVM enabled";
@@ -121,7 +121,7 @@ export class FirecrackerBackend implements SandboxBackend {
     return this.vms.has(sandboxId);
   }
 
-  async create(sandboxId: string): Promise<void> {
+  async create(sandboxId: string, template?: SandboxTemplate): Promise<void> {
     this.assertLinux();
 
     const jailId = this.sanitizeId(sandboxId);
@@ -135,12 +135,15 @@ export class FirecrackerBackend implements SandboxBackend {
     const chrootKernel = join(chrootPath, "vmlinux");
     const chrootRootfs = join(chrootPath, "rootfs.ext4");
 
+    const kernelImagePath = template?.kernelPath ?? this.kernelImagePath;
+    const rootfsPath = template?.rootfsPath ?? this.rootfsPath;
+
     try {
-      await link(this.kernelImagePath, chrootKernel);
+      await link(kernelImagePath, chrootKernel);
     } catch {
-      await copyFile(this.kernelImagePath, chrootKernel);
+      await copyFile(kernelImagePath, chrootKernel);
     }
-    await copyFile(this.rootfsPath, chrootRootfs);
+    await copyFile(rootfsPath, chrootRootfs);
 
     // Create a FIFO for serial input (jailer closes stdin, so we need a pipe)
     const serialInputPath = join(chrootPath, "serial.in");

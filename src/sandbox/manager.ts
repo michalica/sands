@@ -1,10 +1,12 @@
 import { v4 as uuidv4 } from "uuid";
-import type { SandboxBackend, SandboxInfo, ExecutionResult } from "./types.js";
+import type { SandboxBackend, SandboxInfo, ExecutionResult, SandboxTemplate } from "./types.js";
 import { broadcastEvent } from "../routes/events.js";
 import type { SandboxStore } from "../db/store.js";
+import { SandboxMetrics } from "../metrics/prometheus.js";
 
 interface RunningSandbox extends SandboxInfo {
   userId: string | null;
+  templateId: string;
 }
 
 export class SandboxManager {
@@ -18,6 +20,7 @@ export class SandboxManager {
     private ttlMs: number = 300_000,
     private maxSandboxes: number = 0,
     private store?: SandboxStore,
+    private metrics: SandboxMetrics = new SandboxMetrics(),
   ) {}
 
   startTtlCleanup(intervalMs: number = 30_000): void {
@@ -31,14 +34,22 @@ export class SandboxManager {
     }
   }
 
-  async create(userId: string | null = null): Promise<SandboxInfo> {
+  async create(userId: string | null = null, templateId: string = "node-22"): Promise<SandboxInfo & { templateId: string }> {
     if (this.maxSandboxes > 0 && this.running.size >= this.maxSandboxes) {
       throw new SandboxLimitError(this.maxSandboxes);
     }
+    const template = this.store?.getTemplate(templateId) ?? null;
+    if ((this.store && !template) || (!this.store && templateId !== "node-22")) {
+      throw new UnknownTemplateError(templateId);
+    }
     const sandboxId = uuidv4();
     const now = Date.now();
-    const info: SandboxInfo = { sandboxId, createdAt: now, lastUsedAt: now };
-    await this.backend.create(sandboxId);
+    const info = { sandboxId, templateId, createdAt: now, lastUsedAt: now };
+    const templateLoadStartedAt = performance.now();
+    const templateLoadMs = Math.round(performance.now() - templateLoadStartedAt);
+    const coldStartStartedAt = performance.now();
+    await this.backend.create(sandboxId, template);
+    this.metrics.recordSandboxCreated(Math.round(performance.now() - coldStartStartedAt), templateLoadMs);
     this.running.set(sandboxId, { ...info, userId });
     this.store?.createSandbox({ ...info, userId });
     broadcastEvent(userId, { type: "sandbox:created", sandboxId, createdAt: now });
@@ -61,6 +72,7 @@ export class SandboxManager {
     this.store?.updateLastUsed(sandboxId, now);
 
     const result = await this.backend.execute(sandboxId, code, timeoutMs ?? this.defaultTimeoutMs);
+    this.metrics.recordExecution(result);
 
     const executionId = uuidv4();
     const timestamp = Date.now();
@@ -87,6 +99,7 @@ export class SandboxManager {
   async destroy(sandboxId: string, userId: string | null = null): Promise<void> {
     const info = this.assertOwner(sandboxId, userId);
     await this.backend.destroy(sandboxId);
+    this.metrics.recordSandboxDestroyed();
     this.running.delete(sandboxId);
     this.store?.markDestroyed(sandboxId, Date.now());
     broadcastEvent(info.userId, { type: "sandbox:destroyed", sandboxId });
@@ -98,6 +111,24 @@ export class SandboxManager {
 
   get maxSandboxCount(): number {
     return this.maxSandboxes;
+  }
+
+  listTemplates(): SandboxTemplate[] {
+    return this.store?.listTemplates() ?? [];
+  }
+
+  renderPrometheusMetrics(maxMemoryMb: number): string {
+    return this.metrics.renderPrometheus(this.activeSandboxCount, this.maxSandboxCount, maxMemoryMb);
+  }
+
+  getMetricsSummary(maxMemoryMb: number, backendType: string, uptimeSeconds: number) {
+    return this.metrics.toJSON(
+      this.activeSandboxCount,
+      this.maxSandboxCount,
+      backendType,
+      uptimeSeconds,
+      maxMemoryMb,
+    );
   }
 
   listSandboxes(status?: "running" | "destroyed" | "all", userId: string | null = null) {
@@ -168,5 +199,12 @@ export class SandboxLimitError extends Error {
   constructor(max: number) {
     super(`Sandbox limit reached: maximum ${max} concurrent sandboxes`);
     this.name = "SandboxLimitError";
+  }
+}
+
+export class UnknownTemplateError extends Error {
+  constructor(templateId: string) {
+    super(`Unknown template: ${templateId}`);
+    this.name = "UnknownTemplateError";
   }
 }

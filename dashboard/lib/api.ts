@@ -49,7 +49,7 @@ export interface SandboxEvent {
 }
 
 export async function fetchMetrics(): Promise<Metrics | null> {
-  const res = await fetch(`${API_URL}/metrics`, fetchOpts);
+  const res = await fetch(`${API_URL}/metrics?format=json`, fetchOpts);
   return jsonOrNull<Metrics>(res);
 }
 
