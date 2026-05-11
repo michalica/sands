@@ -95,7 +95,7 @@ echo "[..] Copying shell..."
 if command -v busybox &>/dev/null; then
   SHELL_BIN=$(which busybox)
   cp "$SHELL_BIN" "$ROOTDIR/bin/busybox"
-  for cmd in sh mount umount mkdir cat ls sleep ip; do
+  for cmd in sh mount umount mkdir cat ls sleep; do
     ln -sf busybox "$ROOTDIR/bin/$cmd"
   done
 else
@@ -129,12 +129,6 @@ fi
 echo "[..] Installing guest agent..."
 cp "$AGENT_DIR/agent.js" "$ROOTDIR/opt/agent/agent.js"
 
-# Provide DNS defaults for network-enabled sandboxes.
-cat > "$ROOTDIR/etc/resolv.conf" << 'EOF'
-nameserver 1.1.1.1
-nameserver 8.8.8.8
-EOF
-
 # 6. Create init script — boots straight into the agent
 cat > "$ROOTDIR/init" << 'EOF'
 #!/bin/sh
@@ -142,12 +136,6 @@ mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
 mkdir -p /tmp
-
-# If a network interface is present and static IP config was passed via
-# kernel boot args, keep the interface up for outbound connectivity.
-if [ -e /sys/class/net/eth0 ]; then
-  ip link set eth0 up || true
-fi
 
 # Start guest agent on serial console
 # stderr goes to /dev/null to avoid mixing with the JSON protocol on ttyS0

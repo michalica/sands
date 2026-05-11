@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { SandboxBackend, ExecutionResult, SandboxNetworkPolicy, SandboxTemplate } from "./types.js";
+import type { SandboxBackend, ExecutionResult, SandboxTemplate } from "./types.js";
 
 export class ProcessBackend implements SandboxBackend {
   private sandboxes = new Set<string>();
@@ -13,7 +13,7 @@ export class ProcessBackend implements SandboxBackend {
     return join(tmpdir(), "sandboxjs", sandboxId);
   }
 
-  async create(sandboxId: string, _template?: SandboxTemplate, _networkPolicy?: SandboxNetworkPolicy): Promise<void> {
+  async create(sandboxId: string, _template?: SandboxTemplate): Promise<void> {
     const dir = this.sandboxDir(sandboxId);
     await mkdir(dir, { recursive: true });
     this.sandboxes.add(sandboxId);

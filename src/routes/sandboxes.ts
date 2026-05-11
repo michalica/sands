@@ -1,6 +1,5 @@
 import type { FastifyInstance } from "fastify";
 import { SandboxManager, SandboxNotFoundError, SandboxLimitError, UnknownTemplateError } from "../sandbox/manager.js";
-import type { SandboxNetworkPolicy } from "../sandbox/types.js";
 
 interface ExecuteBody {
   code: string;
@@ -26,28 +25,6 @@ function logContext(request: { id: string; userId?: string }, extra?: Record<str
     user_id: request.userId ?? null,
     ...extra,
   };
-}
-
-function normalizeNetworkPolicy(input: CreateSandboxBody["network"]): SandboxNetworkPolicy {
-  const policy: SandboxNetworkPolicy = {
-    enabled: input?.enabled ?? false,
-    allowed: (input?.allowed ?? []).map((value) => value.trim()).filter(Boolean),
-    disallowed: (input?.disallowed ?? []).map((value) => value.trim()).filter(Boolean),
-  };
-
-  const overlap = policy.allowed.find((value) => policy.disallowed.includes(value));
-  if (overlap) {
-    throw new InvalidNetworkPolicyError(`Network policy cannot both allow and disallow: ${overlap}`);
-  }
-
-  return policy;
-}
-
-class InvalidNetworkPolicyError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "InvalidNetworkPolicyError";
-  }
 }
 
 export async function sandboxRoutes(app: FastifyInstance, manager: SandboxManager) {
@@ -80,11 +57,14 @@ export async function sandboxRoutes(app: FastifyInstance, manager: SandboxManage
   app.post("/sandboxes", async (request, reply) => {
     try {
       const body = (request.body as CreateSandboxBody | undefined) ?? {};
-      const networkPolicy = normalizeNetworkPolicy(body.network);
       const info = await manager.create(
         request.userId ?? null,
         body.template ?? "node-22",
-        networkPolicy,
+        {
+          enabled: body.network?.enabled ?? false,
+          allowed: body.network?.allowed ?? [],
+          disallowed: body.network?.disallowed ?? [],
+        },
       );
       request.log.info(
         logContext(request, {
@@ -101,10 +81,6 @@ export async function sandboxRoutes(app: FastifyInstance, manager: SandboxManage
         return { error: err.message };
       }
       if (err instanceof UnknownTemplateError) {
-        reply.code(400);
-        return { error: err.message };
-      }
-      if (err instanceof InvalidNetworkPolicyError) {
         reply.code(400);
         return { error: err.message };
       }

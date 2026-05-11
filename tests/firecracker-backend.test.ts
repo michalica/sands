@@ -147,37 +147,5 @@ describe("FirecrackerBackend", () => {
       expect(command).toContain("172.20.");
       expect(command).toContain("/30");
     });
-
-    it("builds boot args with guest network config when networking is enabled", () => {
-      const backend = new FirecrackerBackend({ maxMemoryMb: 256 });
-      const bootArgs = backend.buildBootArgs("sandbox-123", { enabled: true, allowed: [], disallowed: [] });
-
-      expect(bootArgs).toContain("console=ttyS0");
-      expect(bootArgs).toContain("ip=172.20.");
-      expect(bootArgs).toContain("eth0:off");
-    });
-
-    it("disables networking completely when enabled=false", () => {
-      const backend = new FirecrackerBackend({ maxMemoryMb: 256 });
-      expect(backend.shouldEnableNetworking({ enabled: false, allowed: [], disallowed: [] })).toBe(false);
-    });
-
-    it("builds host egress policy commands for allowed and disallowed destinations", () => {
-      const backend = new FirecrackerBackend({ maxMemoryMb: 256 });
-      const commands = backend.buildNetworkPolicyCommands("sandbox-123", {
-        enabled: true,
-        allowed: ["api.openai.com"],
-        disallowed: ["facebook.com"],
-      });
-
-      expect(commands).toEqual(
-        expect.arrayContaining([
-          expect.stringContaining("iptables"),
-          expect.stringContaining("api.openai.com"),
-          expect.stringContaining("facebook.com"),
-          expect.stringContaining("tap-sandbox-123"),
-        ]),
-      );
-    });
   });
 });

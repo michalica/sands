@@ -59,7 +59,7 @@ export class SandboxManager {
     const templateLoadStartedAt = performance.now();
     const templateLoadMs = Math.round(performance.now() - templateLoadStartedAt);
     const coldStartStartedAt = performance.now();
-    await this.backend.create(sandboxId, template, networkPolicy);
+    await this.backend.create(sandboxId, template);
     this.metrics.recordSandboxCreated(Math.round(performance.now() - coldStartStartedAt), templateLoadMs);
     this.running.set(sandboxId, { ...info, userId });
     this.store?.createSandbox({ ...info, userId });

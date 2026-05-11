@@ -91,24 +91,6 @@ describe("API routes", () => {
       expect(res.statusCode).toBe(400);
       expect(res.json()).toEqual({ error: "Unknown template: missing-template" });
     });
-
-    it("rejects overlapping allowed and disallowed network entries", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/sandboxes",
-        payload: {
-          template: "node-22",
-          network: {
-            enabled: true,
-            allowed: ["api.openai.com"],
-            disallowed: ["api.openai.com"],
-          },
-        },
-      });
-
-      expect(res.statusCode).toBe(400);
-      expect(res.json()).toEqual({ error: "Network policy cannot both allow and disallow: api.openai.com" });
-    });
   });
 
   describe("POST /sandboxes/:id/execute", () => {

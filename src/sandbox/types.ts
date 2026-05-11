@@ -29,7 +29,7 @@ export interface SandboxTemplate {
 }
 
 export interface SandboxBackend {
-  create(sandboxId: string, template?: SandboxTemplate, networkPolicy?: SandboxNetworkPolicy): Promise<void>;
+  create(sandboxId: string, template?: SandboxTemplate): Promise<void>;
   execute(sandboxId: string, code: string, timeoutMs: number): Promise<ExecutionResult>;
   destroy(sandboxId: string): Promise<void>;
   exists(sandboxId: string): boolean;
