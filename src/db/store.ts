@@ -94,9 +94,13 @@ export class SandboxStore {
 
   getExpired(ttlMs: number, now: number): SandboxRecord[] {
     const cutoff = now - ttlMs;
-    return this.db.select().from(sandboxes)
+    const rows = this.db.select().from(sandboxes)
       .where(and(eq(sandboxes.status, "running"), lt(sandboxes.lastUsedAt, cutoff)))
-      .all() as SandboxRecord[];
+      .all() as Array<typeof sandboxes.$inferSelect & { networkPolicy: string }>;
+    return rows.map((row) => ({
+      ...row,
+      networkPolicy: JSON.parse(row.networkPolicy) as SandboxNetworkPolicy,
+    })) as SandboxRecord[];
   }
 
   appendLog(sandboxId: string, entry: {
