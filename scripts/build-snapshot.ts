@@ -43,7 +43,11 @@ const JAILER_BIN = "/usr/local/bin/jailer";
 const JAILER_UID = 1000;
 const JAILER_GID = 1000;
 
-const CHROOT_BASE = "/tmp/snapshot-build";
+// Keep the build chroot on the same filesystem as the destination so we can
+// `rename` the snapshot files out at the end (cross-filesystem rename is an
+// EXDEV error). /tmp is on the boot disk; /opt/sandboxjs is the XFS data
+// disk where snapshots ultimately live.
+const CHROOT_BASE = "/opt/sandboxjs/snapshot-build";
 // Jailer requires alphanumeric + hyphens only — strip anything else so
 // template IDs like "python-3.12" don't trip "Invalid char" at runtime.
 const JAIL_ID = `${TEMPLATE_ID}-snapshot`.replace(/[^a-zA-Z0-9-]/g, "");
