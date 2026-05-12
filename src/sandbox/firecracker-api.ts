@@ -7,6 +7,14 @@ export class FirecrackerApi {
   constructor(private socketPath: string) {}
 
   put(path: string, body: object): Promise<void> {
+    return this.request("PUT", path, body);
+  }
+
+  patch(path: string, body: object): Promise<void> {
+    return this.request("PATCH", path, body);
+  }
+
+  private request(method: "PUT" | "PATCH", path: string, body: object): Promise<void> {
     return new Promise((resolve, reject) => {
       const data = JSON.stringify(body);
 
@@ -14,7 +22,7 @@ export class FirecrackerApi {
         {
           socketPath: this.socketPath,
           path,
-          method: "PUT",
+          method,
           headers: {
             "Content-Type": "application/json",
             "Content-Length": Buffer.byteLength(data),
@@ -25,7 +33,7 @@ export class FirecrackerApi {
           res.on("data", (chunk) => { responseBody += chunk; });
           res.on("end", () => {
             if (res.statusCode && res.statusCode >= 400) {
-              reject(new Error(`Firecracker API ${path}: ${res.statusCode} ${responseBody}`));
+              reject(new Error(`Firecracker API ${method} ${path}: ${res.statusCode} ${responseBody}`));
             } else {
               resolve();
             }

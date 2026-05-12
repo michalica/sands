@@ -214,8 +214,8 @@ async function main(): Promise<void> {
     await waitForAgent(vsockUds);
     console.log(`[..] agent ready, pausing VM`);
 
-    // 9. Pause + capture
-    await api.put("/actions", { action_type: "Pause" });
+    // 9. Pause + capture. Pause is PATCH /vm, not /actions.
+    await api.patch("/vm", { state: "Paused" });
     await api.put("/snapshot/create", {
       snapshot_path: "/state.bin",
       mem_file_path: "/memory.bin",
