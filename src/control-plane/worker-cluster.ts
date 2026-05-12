@@ -170,12 +170,15 @@ export class WorkerCluster implements SandboxBackend {
     path: string,
     body?: object,
   ): Promise<Response> {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.authToken}`,
+    };
+    // Only declare Content-Type when we're actually sending a body —
+    // Fastify rejects an empty JSON body with FST_ERR_CTP_EMPTY_JSON_BODY.
+    if (body !== undefined) headers["Content-Type"] = "application/json";
     return fetch(`${worker.url}${path}`, {
       method,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.authToken}`,
-      },
+      headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   }
