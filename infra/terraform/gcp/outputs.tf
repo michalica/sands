@@ -50,6 +50,5 @@ output "zone" {
 
 output "worker_token_hint" {
   description = "First 8 chars of the shared worker bearer token, for diagnostics"
-  value       = "${substr(random_password.worker_token.result, 0, 8)}…"
-  sensitive   = false
+  value       = "${substr(nonsensitive(random_password.worker_token.result), 0, 8)}…"
 }
