@@ -71,11 +71,15 @@ mkdir -p /srv/jailer
 
 # 6. Worker env file — shared bearer token + the control plane URL it should register with
 if [ ! -f /etc/sandboxjs.env ]; then
+  # Discover our own internal IP so we register with a URL the API server can dial.
+  INTERNAL_IP=$(curl -fsSL -H "Metadata-Flavor: Google" \
+    http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip)
   umask 077
   cat > /etc/sandboxjs.env <<EOF
 WORKER_AUTH_TOKEN=${WORKER_TOKEN}
 WORKER_ID=${WORKER_ID}
 CONTROL_PLANE_URL=${CONTROL_PLANE_URL}
+WORKER_PUBLIC_URL=http://${INTERNAL_IP}:7000
 EOF
   chmod 600 /etc/sandboxjs.env
 fi
