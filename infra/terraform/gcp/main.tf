@@ -46,7 +46,7 @@ resource "google_compute_firewall" "api_public" {
 }
 
 resource "google_compute_firewall" "ssh" {
-  name    = "${var.instance_name}-allow-ssh"
+  name    = "${var.instance_name}-fleet-ssh"
   network = "default"
 
   allow {
