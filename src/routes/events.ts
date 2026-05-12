@@ -1,6 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "@fastify/websocket";
-import { resolveUserId } from "../auth-hook.js";
+
+// resolveUserId pulls in auth.ts, which eagerly opens SQLite. The worker
+// imports this file via SandboxManager (for broadcastEvent) but doesn't
+// run eventsRoutes — so we keep the import lazy to avoid that side-effect.
 
 export type SandboxEvent =
   | { type: "sandbox:created"; sandboxId: string; createdAt: number }
@@ -38,6 +41,7 @@ export async function eventsRoutes(app: FastifyInstance) {
     {
       websocket: true,
       preHandler: async (req, reply) => {
+        const { resolveUserId } = await import("../auth-hook.js");
         const userId = await resolveUserId(req);
         if (!userId) {
           reply.code(401).send({ error: "Authentication required" });
