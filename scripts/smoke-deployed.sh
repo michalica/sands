@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-API="${API:-http://34.40.68.141:3000}"
-KEY="${KEY:-TEbGfwbxWYvVHcalsNZcKwNrFgJygtUnFCSVXTEVQMYpuBBMkYZQXyqKKCUvHOfK}"
+API="${API:-http://34.141.24.128:3000}"
+KEY="${KEY:-NsHuRTHFeTieZWvppfSknxNgrDQRYKsxBKNoePhziUSfwyuEQArZypFgvLZxsQrH}"
 
 now() { python3 -c 'import time; print(f"{time.time():.6f}")'; }
 elapsed() { python3 -c "print(f'{$2 - $1:.3f}')"; }

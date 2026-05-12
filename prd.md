@@ -319,12 +319,47 @@ Remaining 1.3 s cold start is dominated by `copyFile` of the ~150 MB template ro
 * Expected cold start: ~1.3 s → **~700-800 ms**.
 * Not transformative — tactical follow-up to snapshots. Worth doing when a user notices the difference between 1.3 s and sub-second.
 
-**4.2 Multi-host worker fleet**
+**4.2 Control plane + worker split (~5 days, SQLite-compatible)**
 
-* Postgres replaces SQLite (only when actually needed)
-* Control plane vs worker split
-* Atomic VM reservation via `FOR UPDATE SKIP LOCKED`
-* Heartbeat-based reaping
+Extract API + dashboard onto their own VM. Firecracker host becomes a "worker" with a tiny internal-only HTTP API. Control plane routes sandbox lifecycle calls to the right worker. Same capacity ceiling per worker (17 µVMs), but adding a second worker becomes a `terraform apply` with zero code changes.
+
+Architecture:
+
+```
+[Application server: e2-small ~$13/mo]              [Worker(s): n2-standard-2 ~$45/mo each]
+├── Fastify API (public)                ────HTTPS──▶ ├── Worker daemon (Fastify, internal-only)
+├── Next.js dashboard (public)                       ├── Firecracker microVMs + jailer
+├── SQLite (users, sandboxes, API keys, mapping)     └── Snapshot files (built locally per worker)
+└── WorkerRouter (HTTP client + scheduler)
+```
+
+Components:
+
+* **Worker daemon**: today's `firecracker-backend.ts` wrapped in HTTP. POST `/sandboxes`, POST `/sandboxes/:id/execute`, DELETE `/sandboxes/:id`, GET `/health`, GET `/capacity`. Bearer-token auth shared with control plane.
+* **Worker registration + heartbeat**: workers register on boot, heartbeat every 5 s with current capacity. Control plane evicts workers it hasn't heard from for 30 s and marks their sandboxes as terminated.
+* **Sandbox→worker mapping**: new column in the `sandboxes` table. Every `/execute` and `/destroy` does one DB lookup to route.
+* **Naive scheduler**: pick the worker with most free capacity (`maxSandboxes - active` from latest heartbeat). 50 lines of code.
+
+**Stays on SQLite.** With a single application server process, the Node event loop serializes requests; `better-sqlite3` serializes writes. No `FOR UPDATE SKIP LOCKED` race exists.
+
+Failure modes worth handling (none require Postgres):
+- Worker dies mid-create → HTTP timeout, control plane retries on another worker.
+- Stale heartbeat capacity → in-memory counter of in-flight assignments per worker, decremented on completion.
+- Worker reboots, control plane still thinks it owns a sandbox → next `/execute` returns 410 Gone, DB marks terminated.
+
+Performance impact on user-visible operations: **<20 ms per call** (one extra HTTP hop on internal VPC). Negligible against 1+ second sandbox operations.
+
+**4.2a HA control plane (only if you need it, requires Postgres)**
+
+Triggered when you want multiple application server replicas behind a load balancer — for redundancy, zero-downtime deploys, or to handle public API load that exceeds one VM's capacity.
+
+At this point the race condition between competing control planes becomes real:
+* `BEGIN; SELECT … FOR UPDATE SKIP LOCKED; UPDATE …; COMMIT;` for atomic sandbox→worker assignment.
+* Migrate SQLite → Postgres (Neon free tier, or Cloud SQL).
+* Migrate better-auth to its Postgres adapter.
+* Shared `BETTER_AUTH_SECRET` across replicas via Secret Manager.
+
+This is genuinely v3+ territory. Stay on the single-application-server + SQLite path until something forces this transition.
 
 **4.3 Dashboard surface**
 
