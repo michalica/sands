@@ -60,6 +60,14 @@ ssh "$SSH_TARGET" "cd $REMOTE_DIR && npm ci --omit=dev"
 echo "[..] Ensuring kernel + rootfs are built..."
 ssh "$SSH_TARGET" "cd $REMOTE_DIR/infra/firecracker && make all"
 
+# 6b. Build Firecracker snapshots for each template (idempotent — manifest hash
+# matches => skip). First-time cost: ~10-15s per template. Subsequent deploys
+# only rebuild if the rootfs, kernel, or Firecracker binary changed.
+echo "[..] Building snapshots..."
+for tpl in node-22 python-3.12; do
+  ssh "$SSH_TARGET" "sudo $REMOTE_DIR/scripts/build-snapshot.sh $tpl"
+done
+
 # 7. Build the dashboard on the VM
 # Generate .env.production with the VM's public IP so NEXT_PUBLIC_* vars get baked in correctly.
 echo "[..] Building dashboard..."

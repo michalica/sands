@@ -139,4 +139,43 @@ describe("FirecrackerBackend", () => {
     });
 
   });
+
+  describe("snapshot paths", () => {
+    it("derives snapshot paths next to the template rootfs", () => {
+      const backend = new FirecrackerBackend({ maxMemoryMb: 256 });
+      const paths = backend.snapshotPaths({
+        id: "node-22",
+        name: "Node 22",
+        version: "22",
+        rootfsPath: "/opt/sandboxjs/templates/node-22/rootfs.ext4",
+        kernelPath: "/opt/sandboxjs/vmlinux",
+        defaultPackages: [],
+        buildMeta: {},
+      });
+      expect(paths).toEqual({
+        state: "/opt/sandboxjs/templates/node-22/snapshot/state.bin",
+        memory: "/opt/sandboxjs/templates/node-22/snapshot/memory.bin",
+      });
+    });
+
+    it("falls back to the backend's default rootfs when no template is given", () => {
+      const backend = new FirecrackerBackend({
+        maxMemoryMb: 256,
+        rootfsPath: "/opt/sandboxjs/rootfs.ext4",
+      });
+      const paths = backend.snapshotPaths(undefined);
+      expect(paths).toEqual({
+        state: "/opt/sandboxjs/snapshot/state.bin",
+        memory: "/opt/sandboxjs/snapshot/memory.bin",
+      });
+    });
+
+    it("hasSnapshot returns false when files don't exist", async () => {
+      const backend = new FirecrackerBackend({
+        maxMemoryMb: 256,
+        rootfsPath: "/nonexistent/rootfs.ext4",
+      });
+      await expect(backend.hasSnapshot(undefined)).resolves.toBe(false);
+    });
+  });
 });

@@ -1,7 +1,7 @@
 import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { copyFile, link, mkdir, access, rm } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
-import { join, basename } from "node:path";
+import { join, basename, dirname } from "node:path";
 import type { SandboxBackend, ExecutionResult, SandboxTemplate } from "./types.js";
 import { FirecrackerApi } from "./firecracker-api.js";
 
@@ -150,6 +150,30 @@ export class FirecrackerBackend implements SandboxBackend {
     return this.vms.has(sandboxId);
   }
 
+  /** Where the snapshot files for a template would live, if any. */
+  snapshotPaths(template?: SandboxTemplate): { state: string; memory: string } | null {
+    const rootfs = template?.rootfsPath ?? this.rootfsPath;
+    if (!rootfs) return null;
+    const dir = dirname(rootfs);
+    return {
+      state: join(dir, "snapshot", "state.bin"),
+      memory: join(dir, "snapshot", "memory.bin"),
+    };
+  }
+
+  /** True if both snapshot files exist on disk for this template. */
+  async hasSnapshot(template?: SandboxTemplate): Promise<boolean> {
+    const paths = this.snapshotPaths(template);
+    if (!paths) return false;
+    try {
+      await access(paths.state);
+      await access(paths.memory);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async create(sandboxId: string, template?: SandboxTemplate): Promise<void> {
     this.assertLinux();
 
@@ -175,6 +199,28 @@ export class FirecrackerBackend implements SandboxBackend {
     }
     await copyFile(rootfsPath, chrootRootfs);
 
+    // If a snapshot exists for this template, stage it into the chroot so we can
+    // restore from it instead of doing a full kernel boot.
+    let useSnapshot = false;
+    const snapshot = this.snapshotPaths(template);
+    if (snapshot) {
+      try {
+        await access(snapshot.state);
+        await access(snapshot.memory);
+        try {
+          await link(snapshot.state, join(chrootPath, "state.bin"));
+          await link(snapshot.memory, join(chrootPath, "memory.bin"));
+        } catch {
+          // Cross-filesystem hardlink fails — copy instead. Slower but correct.
+          await copyFile(snapshot.state, join(chrootPath, "state.bin"));
+          await copyFile(snapshot.memory, join(chrootPath, "memory.bin"));
+        }
+        useSnapshot = true;
+      } catch {
+        // No snapshot present; fall through to cold boot.
+      }
+    }
+
     // Set ownership so the jailed process (uid/gid) can access the files
     execSync(`chown -R ${this.jailerUid}:${this.jailerGid} ${chrootPath}`);
 
@@ -198,34 +244,53 @@ export class FirecrackerBackend implements SandboxBackend {
 
     const api = new FirecrackerApi(apiSocketPath);
 
-    // Configure VM — paths are relative to chroot
-    await api.put("/machine-config", {
-      vcpu_count: this.vcpuCount,
-      mem_size_mib: this.maxMemoryMb,
-    });
+    if (useSnapshot) {
+      // Restore from snapshot. The snapshot already contains machine config,
+      // boot source, drives, vsock device — we only need to load it.
+      await api.put("/snapshot/load", {
+        snapshot_path: "/state.bin",
+        mem_backend: { backend_type: "File", backend_path: "/memory.bin" },
+        enable_diff_snapshots: false,
+        resume_vm: true,
+      });
+    } else {
+      // Cold boot path. Configure each device, then InstanceStart.
+      await api.put("/machine-config", {
+        vcpu_count: this.vcpuCount,
+        mem_size_mib: this.maxMemoryMb,
+      });
 
-    await api.put("/boot-source", {
-      kernel_image_path: "/vmlinux",
-      boot_args: BOOT_ARGS,
-    });
+      await api.put("/boot-source", {
+        kernel_image_path: "/vmlinux",
+        boot_args: BOOT_ARGS,
+      });
 
-    await api.put("/drives/rootfs", {
-      drive_id: "rootfs",
-      path_on_host: "/rootfs.ext4",
-      is_root_device: true,
-      is_read_only: false,
-    });
+      await api.put("/drives/rootfs", {
+        drive_id: "rootfs",
+        path_on_host: "/rootfs.ext4",
+        is_root_device: true,
+        is_read_only: false,
+      });
 
-    // Configure vsock. uds_path is relative to chroot; Firecracker creates
-    // <chroot>/v.sock and listens there. Each incoming host-side connection
-    // initiates with "CONNECT <port>\n" to reach the guest on that vsock port.
-    await api.put("/vsock", {
-      guest_cid: GUEST_CID,
-      uds_path: VSOCK_UDS_NAME,
-    });
+      // Configure vsock. uds_path is relative to chroot; Firecracker creates
+      // <chroot>/v.sock and listens there. Each incoming host-side connection
+      // initiates with "CONNECT <port>\n" to reach the guest on that vsock port.
+      await api.put("/vsock", {
+        guest_cid: GUEST_CID,
+        uds_path: VSOCK_UDS_NAME,
+      });
 
-    // Start the VM
-    await api.put("/actions", { action_type: "InstanceStart" });
+      // Entropy device — also matters for snapshot-loaded VMs (the device is
+      // captured by the snapshot, so it's already wired up there).
+      try {
+        await api.put("/entropy", {});
+      } catch {
+        // Older Firecracker without entropy device; not fatal.
+      }
+
+      // Start the VM
+      await api.put("/actions", { action_type: "InstanceStart" });
+    }
 
     const state: VmState = {
       proc,
