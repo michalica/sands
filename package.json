@@ -6,7 +6,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node --env-file-if-exists=.env dist/server.js",
+    "start:worker": "node --env-file-if-exists=.env dist/worker/server.js",
     "dev": "tsx --env-file-if-exists=.env src/server.ts",
+    "dev:worker": "tsx --env-file-if-exists=.env src/worker/server.ts",
     "test": "BETTER_AUTH_SECRET=test-secret vitest run",
     "test:watch": "BETTER_AUTH_SECRET=test-secret vitest"
   },
