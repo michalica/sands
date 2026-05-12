@@ -270,17 +270,12 @@ export class FirecrackerBackend implements SandboxBackend {
       throw new Error(`Sandbox not found: ${sandboxId}`);
     }
 
-    // Try graceful shutdown
-    try {
-      await vm.api.put("/actions", { action_type: "SendCtrlAltDel" });
-      await this.waitForProcessExit(vm.proc, 3000);
-    } catch {
-      // Force kill if graceful shutdown fails
-    }
-
-    if (!vm.proc.killed) {
-      vm.proc.kill("SIGKILL");
-    }
+    // SIGKILL directly. Firecracker microVMs rarely respond to SendCtrlAltDel,
+    // and these are ephemeral — there's no graceful state to preserve.
+    // A small wait gives the kernel time to release file descriptors before
+    // we rm -rf the chroot.
+    vm.proc.kill("SIGKILL");
+    await this.waitForProcessExit(vm.proc, 500);
 
     // Remove entire chroot directory
     const execName = basename(this.firecrackerBin);

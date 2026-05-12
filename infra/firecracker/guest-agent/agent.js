@@ -23,6 +23,7 @@ const { spawn } = require("child_process");
 const { writeFileSync, unlinkSync } = require("fs");
 
 const SOCK_PATH = "/tmp/agent.sock";
+let jobSeq = 0;
 
 try { unlinkSync(SOCK_PATH); } catch {}
 
@@ -58,7 +59,8 @@ function handle(conn, request) {
     return respond(conn, { error: "unknown request type" });
   }
   const { code, timeoutMs = 5000 } = request;
-  writeFileSync("/tmp/job.js", code, "utf-8");
+  const jobPath = `/tmp/job-${++jobSeq}.js`;
+  writeFileSync(jobPath, code, "utf-8");
 
   const start = Date.now();
   let stdout = "";
@@ -66,7 +68,7 @@ function handle(conn, request) {
   let timedOut = false;
   let settled = false;
 
-  const child = spawn("/usr/local/bin/node", ["--max-old-space-size=256", "/tmp/job.js"], {
+  const child = spawn("/usr/local/bin/node", ["--max-old-space-size=256", jobPath], {
     env: { PATH: "/usr/local/bin:/usr/bin:/bin" },
     stdio: ["ignore", "pipe", "pipe"],
   });
