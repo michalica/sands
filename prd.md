@@ -133,6 +133,9 @@ The MVP is deployed on a single GCP `n2-standard-2` VM in `europe-west3` (`infra
 * 5-minute idle TTL with automatic cleanup
 * End-to-end deploy: `terraform apply` → `make deploy` brings up API + dashboard + Firecracker on the VM
 * Capacity: **17 concurrent microVMs** on the current VM size
+* Guest ↔ host channel via **virtio-vsock** (length-prefixed JSON, per-call connection, concurrent calls supported)
+* Structured logs (Pino with `request_id`, `user_id`, `sandbox_id`, `template`, `outcome`) and Prometheus `/metrics` exposition
+* **Firecracker snapshot-based fast boot**: per-template snapshots captured at agent-ready state, CoW-mmap'd on restore. Measured cold start: ~1.3 s (vs ~8 s without snapshots). Manifest-based invalidation rebuilds snapshots only when rootfs / kernel / Firecracker version changes.
 
 ### Current limitations
 
@@ -143,9 +146,7 @@ The MVP is deployed on a single GCP `n2-standard-2` VM in `europe-west3` (`infra
 * No PTY / interactive terminal
 * No exposed-port forwarding (can't host a server inside a sandbox)
 * Single-host (no fleet of workers)
-* No snapshots (every boot is cold ~150ms)
-* Observability is bare: structured logs to journalctl, no metrics, no traces
-* Guest ↔ host channel is serial-console JSON RPC (slow, single in-flight call per VM)
+* Rootfs is still `copyFile`'d per sandbox (~600 ms of disk I/O on ext4). Reflinks on xfs/btrfs would drop cold start further to ~700-800 ms. **Deferred** — see Tier 4.
 
 ---
 
@@ -299,11 +300,24 @@ Depends on Tier 1 (templates + networking) and Tier 2.3 (exposed ports).
 
 ### Tier 4 — Operations (open-ended, only when needed)
 
-**4.1 Snapshots / fast boot**
+**4.1 Snapshots / fast boot — SHIPPED**
 
-* Use Firecracker's snapshot API (`PUT /snapshot/create`, `PUT /snapshot/load`)
-* Pre-warm pool of N snapshot-restored microVMs per template
-* Drops cold start from ~150ms to ~5ms
+Per-template Firecracker snapshots captured at agent-ready state. CoW-mmap on restore. Operator workflow:
+
+```
+scripts/build-snapshot.sh <template-id>   # idempotent — manifest hash gate
+```
+
+Measured impact: ~8 s → ~1.3 s cold start. Deploy script runs the snapshot builder per template after rootfs build.
+
+**4.1a Rootfs reflinks (deferred, ~half day)**
+
+Remaining 1.3 s cold start is dominated by `copyFile` of the ~150 MB template rootfs (~600 ms). On a CoW-capable filesystem this becomes near-instant.
+
+* Reformat `/opt/sandboxjs/` as xfs (`mkfs.xfs -m reflink=1`) or btrfs on a dedicated terraform-managed data disk.
+* Swap `copyFile(rootfsPath, chrootRootfs)` at `src/sandbox/firecracker-backend.ts:176` for `cp --reflink=auto` (via `execSync`).
+* Expected cold start: ~1.3 s → **~700-800 ms**.
+* Not transformative — tactical follow-up to snapshots. Worth doing when a user notices the difference between 1.3 s and sub-second.
 
 **4.2 Multi-host worker fleet**
 
