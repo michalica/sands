@@ -1,0 +1,32 @@
+[Unit]
+Description=SandboxJS Worker Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/sandboxjs/app
+ExecStartPre=/usr/bin/mkdir -p /opt/sandboxjs/data
+ExecStart=/usr/bin/node dist/worker/server.js
+EnvironmentFile=/etc/sandboxjs.env
+Environment=NODE_ENV=production
+Environment=SANDBOX_BACKEND=firecracker
+Environment=WORKER_PORT=7000
+Environment=WORKER_HOST=0.0.0.0
+Environment=TIMEOUT_MS=5000
+Environment=MAX_MEMORY_MB=256
+Environment=MAX_SANDBOXES=17
+Environment=SANDBOX_TTL_MS=300000
+Environment=KERNEL_IMAGE_PATH=/opt/sandboxjs/vmlinux
+Environment=ROOTFS_PATH=/opt/sandboxjs/rootfs.ext4
+Environment=FIRECRACKER_BIN=/usr/local/bin/firecracker
+Environment=JAILER_BIN=/usr/local/bin/jailer
+Environment=JAILER_UID=1000
+Environment=JAILER_GID=1000
+Environment=CPU_QUOTA_PERCENT=10
+Environment=CHROOT_BASE_DIR=/srv/jailer
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
