@@ -2,6 +2,8 @@ import Fastify from "fastify";
 import { config } from "../config.js";
 import { SandboxManager } from "../sandbox/manager.js";
 import { createBackend } from "../sandbox/backend-factory.js";
+import { createDb } from "../db/index.js";
+import { SandboxStore } from "../db/store.js";
 import { workerRoutes } from "./routes.js";
 import { registerControlPlaneAuth } from "./auth-hook.js";
 import { startRegistration } from "./registration.js";
@@ -37,13 +39,18 @@ const backend = createBackend({
   },
 });
 
-// No store on workers — sandbox metadata lives at the control plane.
-// The manager keeps its in-memory `running` map for execute routing + TTL.
+// Workers run a tiny in-memory SQLite — used ONLY to expose the templates
+// catalog to the SandboxManager. User/sandbox/auth metadata lives at the
+// control plane; we don't replicate it here.
+const db = createDb(":memory:");
+const store = new SandboxStore(db);
+
 const manager = new SandboxManager(
   backend,
   config.defaultTimeoutMs,
   config.sandboxTtlMs,
   config.maxSandboxes,
+  store,
 );
 
 // Health check is unauthenticated so the control plane (or a load balancer)

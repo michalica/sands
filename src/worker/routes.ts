@@ -42,8 +42,14 @@ export async function workerRoutes(app: FastifyInstance, manager: SandboxManager
     try {
       const body = (request.body ?? {}) as CreateBody;
       // Worker owns no userId. Control plane records the user ↔ sandbox
-      // mapping in its own DB; the worker just runs the VM.
-      const info = await manager.create(null, body.templateId ?? "node-22");
+      // mapping in its own DB; the worker just runs the VM. If the
+      // control plane allocated a sandboxId, use it.
+      const info = await manager.create(
+        null,
+        body.templateId ?? "node-22",
+        undefined,
+        body.sandboxId,
+      );
       reply.code(201);
       return { sandboxId: info.sandboxId, templateId: info.templateId };
     } catch (err) {

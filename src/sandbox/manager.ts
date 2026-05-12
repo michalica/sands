@@ -45,6 +45,11 @@ export class SandboxManager {
     userId: string | null = null,
     templateId: string = "node-22",
     networkPolicy: SandboxNetworkPolicy = DEFAULT_NETWORK_POLICY,
+    /**
+     * Optional pre-allocated sandbox id. The control plane uses this so the
+     * worker doesn't generate ids that the control plane hasn't seen.
+     */
+    sandboxId: string = uuidv4(),
   ): Promise<SandboxInfo & { templateId: string; networkPolicy: SandboxNetworkPolicy }> {
     if (this.maxSandboxes > 0 && this.running.size >= this.maxSandboxes) {
       throw new SandboxLimitError(this.maxSandboxes);
@@ -53,7 +58,6 @@ export class SandboxManager {
     if ((this.store && !template) || (!this.store && templateId !== "node-22")) {
       throw new UnknownTemplateError(templateId);
     }
-    const sandboxId = uuidv4();
     const now = Date.now();
     const info = { sandboxId, templateId, networkPolicy, createdAt: now, lastUsedAt: now };
     const templateLoadStartedAt = performance.now();
