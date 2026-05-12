@@ -46,7 +46,13 @@ variable "api_boot_disk_size_gb" {
 }
 
 variable "worker_boot_disk_size_gb" {
-  description = "Boot disk size for each worker (OS + kernel + rootfs + chroots + snapshots)."
+  description = "Boot disk size for each worker (OS only — data goes to a separate XFS disk)."
+  type        = number
+  default     = 20
+}
+
+variable "worker_data_disk_size_gb" {
+  description = "Separate XFS data disk per worker. Holds /opt/sandboxjs (kernels, rootfs, snapshots, jailer chroots). XFS+reflink makes per-VM rootfs clones near-instant."
   type        = number
   default     = 30
 }

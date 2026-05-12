@@ -43,7 +43,37 @@ echo "[OK] /dev/vhost-vsock present"
 # 2. Install base packages
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y curl ca-certificates gnupg socat squashfs-tools git build-essential e2fsprogs busybox-static
+apt-get install -y curl ca-certificates gnupg socat squashfs-tools git build-essential e2fsprogs xfsprogs busybox-static
+
+# 2b. Mount the attached data disk as XFS with reflink=1 at /opt/sandboxjs.
+# Reflinks make `copyFile` near-instant for the per-sandbox rootfs clones —
+# 17 parallel creates land in ~1 s wall instead of ~17 s.
+DATA_DISK="/dev/disk/by-id/google-sandboxjs-data"
+echo "[..] Waiting for data disk to attach..."
+for _ in $(seq 1 30); do
+  [ -b "$DATA_DISK" ] && break
+  sleep 1
+done
+if [ ! -b "$DATA_DISK" ]; then
+  echo "ERROR: data disk $DATA_DISK never appeared"
+  exit 1
+fi
+
+if ! blkid "$DATA_DISK" 2>/dev/null | grep -q 'TYPE="xfs"'; then
+  echo "[..] formatting $DATA_DISK as xfs with reflink=1"
+  mkfs.xfs -m reflink=1 -f "$DATA_DISK"
+fi
+
+mkdir -p /opt/sandboxjs
+if ! mountpoint -q /opt/sandboxjs; then
+  mount "$DATA_DISK" /opt/sandboxjs
+fi
+
+UUID=$(blkid -s UUID -o value "$DATA_DISK")
+if ! grep -q "$UUID" /etc/fstab; then
+  echo "UUID=$UUID /opt/sandboxjs xfs defaults 0 0" >> /etc/fstab
+fi
+echo "[OK] $DATA_DISK mounted at /opt/sandboxjs (xfs, reflink=1)"
 
 # 3. Node.js 20 (needed for the worker daemon and the build-snapshot script)
 if ! command -v node &>/dev/null || ! node -v | grep -q "v${NODE_MAJOR}"; then
@@ -65,9 +95,11 @@ if [ ! -x /usr/local/bin/firecracker ]; then
 fi
 echo "[OK] Firecracker $(/usr/local/bin/firecracker --version 2>&1 | head -1)"
 
-# 5. Directories the worker daemon and snapshot builder write into
-mkdir -p /opt/sandboxjs/{app,scripts,vms,data,base,templates}
-mkdir -p /srv/jailer
+# 5. Directories the worker daemon and snapshot builder write into.
+# Everything under /opt/sandboxjs/ lives on the XFS reflink volume so that
+# rootfs cloning between templates/<id>/rootfs.ext4 and chroot/<id>/root/
+# is a metadata-only operation.
+mkdir -p /opt/sandboxjs/{app,scripts,vms,data,base,templates,chroot}
 
 # 6. Worker env file — shared bearer token + the control plane URL it should register with
 if [ ! -f /etc/sandboxjs.env ]; then

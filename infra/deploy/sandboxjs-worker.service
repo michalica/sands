@@ -24,7 +24,7 @@ Environment=JAILER_BIN=/usr/local/bin/jailer
 Environment=JAILER_UID=1000
 Environment=JAILER_GID=1000
 Environment=CPU_QUOTA_PERCENT=10
-Environment=CHROOT_BASE_DIR=/srv/jailer
+Environment=CHROOT_BASE_DIR=/opt/sandboxjs/chroot
 Restart=always
 RestartSec=5
 

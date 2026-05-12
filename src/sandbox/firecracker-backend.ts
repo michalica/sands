@@ -1,5 +1,6 @@
 import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { copyFile, link, mkdir, access, rm } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { join, basename, dirname } from "node:path";
 import type { SandboxBackend, ExecutionResult, SandboxTemplate } from "./types.js";
@@ -197,7 +198,11 @@ export class FirecrackerBackend implements SandboxBackend {
     } catch {
       await copyFile(kernelImagePath, chrootKernel);
     }
-    await copyFile(rootfsPath, chrootRootfs);
+    // Per-VM rootfs: request a reflink (CoW clone) via FICLONE. On XFS with
+    // reflink=1 or btrfs this is metadata-only and near-instant; on ext4 the
+    // kernel falls back to a regular copy automatically — same behavior as
+    // copyFile() without the flag.
+    await copyFile(rootfsPath, chrootRootfs, fsConstants.COPYFILE_FICLONE);
 
     // If a snapshot exists for this template, stage it into the chroot so we can
     // restore from it instead of doing a full kernel boot.

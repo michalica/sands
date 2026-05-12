@@ -117,6 +117,18 @@ resource "google_compute_address" "worker" {
   region = var.region
 }
 
+# Separate data disk for /opt/sandboxjs. We mount it as XFS with reflink=1
+# so the per-sandbox rootfs "copy" becomes a CoW clone (near-instant) instead
+# of a 150 MB write. Without this, 17 concurrent creates serialize on disk
+# (~17 s wall); with it they finish in ~1 s.
+resource "google_compute_disk" "worker_data" {
+  count = var.worker_count
+  name  = "${var.instance_name}-worker-${count.index}-data"
+  type  = "pd-balanced"
+  size  = var.worker_data_disk_size_gb
+  zone  = var.zone
+}
+
 resource "google_compute_instance" "worker" {
   count        = var.worker_count
   name         = "${var.instance_name}-worker-${count.index}"
@@ -143,6 +155,11 @@ resource "google_compute_instance" "worker" {
       # server tag, and there are no other public ports.
       nat_ip = google_compute_address.worker[count.index].address
     }
+  }
+
+  attached_disk {
+    source      = google_compute_disk.worker_data[count.index].self_link
+    device_name = "sandboxjs-data"
   }
 
   metadata = {
