@@ -106,8 +106,16 @@ for WORKER_TARGET in "${WORKER_TARGETS[@]}"; do
   echo "[..] Installing worker dependencies..."
   ssh "$WORKER_TARGET" "cd $REMOTE_DIR && npm ci --omit=dev"
 
-  echo "[..] Ensuring kernel + rootfs are built..."
-  ssh "$WORKER_TARGET" "cd $REMOTE_DIR/infra/firecracker && make all"
+  echo "[..] Ensuring kernel is downloaded..."
+  ssh "$WORKER_TARGET" "cd $REMOTE_DIR/infra/firecracker && bash download-kernel.sh"
+
+  echo "[..] Ensuring base rootfs is built..."
+  ssh "$WORKER_TARGET" "sudo $REMOTE_DIR/infra/firecracker/build-base-rootfs.sh"
+
+  echo "[..] Building per-template rootfs..."
+  for tpl in node-22 python-3.12; do
+    ssh "$WORKER_TARGET" "sudo $REMOTE_DIR/infra/firecracker/build-template.sh $tpl"
+  done
 
   echo "[..] Building snapshots..."
   for tpl in node-22 python-3.12; do
