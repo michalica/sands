@@ -223,8 +223,17 @@ async function main(): Promise<void> {
     });
     console.log(`[..] snapshot captured`);
   } finally {
-    // 10. Kill source VM (snapshot files are already written to disk)
+    // 10. Kill source VM (snapshot files are already written to disk).
+    // jailer was spawned with --new-pid-ns, so its firecracker child is in
+    // a separate PID namespace — killing jailer does NOT take firecracker
+    // with it. Need to explicitly kill the firecracker process to avoid
+    // leaving orphans that hog KVM and conflict with future builds.
     if (!proc.killed) proc.kill("SIGKILL");
+    try {
+      execSync(`pkill -9 -f "firecracker --id ${JAIL_ID}"`);
+    } catch {
+      // pkill returns nonzero when no process matched — fine, nothing to kill
+    }
     await new Promise((r) => setTimeout(r, 200));
   }
 

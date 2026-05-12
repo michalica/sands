@@ -337,9 +337,15 @@ export class FirecrackerBackend implements SandboxBackend {
 
     // SIGKILL directly. Firecracker microVMs rarely respond to SendCtrlAltDel,
     // and these are ephemeral — there's no graceful state to preserve.
-    // A small wait gives the kernel time to release file descriptors before
-    // we rm -rf the chroot.
+    // jailer is spawned with --new-pid-ns; its firecracker child is in a
+    // separate PID namespace, so killing jailer does NOT take firecracker
+    // with it. Explicitly kill any firecracker for this jail ID too.
     vm.proc.kill("SIGKILL");
+    try {
+      execSync(`pkill -9 -f "firecracker --id ${vm.jailId}"`);
+    } catch {
+      // pkill returns nonzero when no match — expected when jailer cleanup worked
+    }
     await this.waitForProcessExit(vm.proc, 500);
 
     // Remove entire chroot directory
