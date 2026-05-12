@@ -148,7 +148,15 @@ Full breakdown in `prd.md`.
 
 ## License
 
-TBD.
+GNU AFFERO GENERAL PUBLIC LICENSE
+Version 3, 19 November 2007
+
+Copyright (C) 2026 Michalica
+
+This project is licensed under the GNU Affero General Public License v3.0.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 ## References
 
